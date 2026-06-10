@@ -63,6 +63,14 @@ function decToFrac(x) {
   const num = Math.round(Math.abs(x) * den);
   return simplify(neg ? -num : num, den);
 }
+// tìm phân số đúng (mẫu nhỏ nhất) ứng với một giá trị — tránh lỗi số thực lặp vô hạn
+function nearestFrac(x, maxD = 36) {
+  for (let d = 1; d <= maxD; d++) {
+    const n = Math.round(x * d);
+    if (Math.abs(x - n / d) < 1e-6) return simplify(n, d);
+  }
+  return decToFrac(x);
+}
 function parseNum(str) {
   if (str == null) return NaN;
   let s = String(str).trim().replace(/\s/g, "").replace(",", ".");
@@ -163,7 +171,7 @@ function NumberLine({ min = -2, max = 2, denom = 1, value, onChange, mirror = fa
   const innerW = w - pad * 2;
   const toX = (v) => pad + ((v - min) / (max - min)) * innerW;
   const fromX = (x) => { let v = min + ((x - pad) / innerW) * (max - min); if (snap) { const step = 1 / denom; v = Math.round(v / step) * step; } return Math.max(min, Math.min(max, v)); };
-  const y = height / 2 + 8;
+  const y = height - 54; // hạ trục số xuống thấp, chừa chỗ phía trên cho nhãn (có thể xếp chồng)
   const drag = useCallback((cx) => { if (!interactive || !ref.current) return; const r = ref.current.getBoundingClientRect(); onChange && onChange(fromX(cx - r.left)); }, [interactive, onChange, min, max, denom]);
   const [dragging, setDragging] = useState(false);
   useEffect(() => {
@@ -178,13 +186,15 @@ function NumberLine({ min = -2, max = 2, denom = 1, value, onChange, mirror = fa
   const ticks = [];
   for (let i = min * denom; i <= max * denom; i++) ticks.push({ v: i / denom, isInt: Number.isInteger(i / denom) });
 
-  const Dot = ({ v, fill, big }) => {
-    const [n, d] = decToFrac(Math.round(v * denom) / denom);
+  const head = Math.max(0, y - 70); // chỗ trống phía trên để nâng nhãn mà không bị cắt
+  const liftFor = (vv) => (value != null && Math.abs(toX(vv) - toX(value)) < 72 ? Math.min(34, head) : 0);
+  const Dot = ({ v, fill, big, lift = 0 }) => {
+    const [n, d] = nearestFrac(v);
     return (
       <g>
-        <line x1={toX(v)} y1={y} x2={toX(v)} y2={y - 34} stroke={fill} strokeWidth={2.5} strokeDasharray="3 3" opacity={0.5} />
+        <line x1={toX(v)} y1={y} x2={toX(v)} y2={y - 34 - lift} stroke={fill} strokeWidth={2.5} strokeDasharray="3 3" opacity={0.5} />
         <circle cx={toX(v)} cy={y} r={big ? 11 : 8} fill={fill} stroke="#fff" strokeWidth={3} />
-        <foreignObject x={toX(v) - 45} y={y - 70} width={90} height={36}>
+        <foreignObject x={toX(v) - 45} y={y - 70 - lift} width={90} height={36}>
           <div style={{ display: "flex", justifyContent: "center" }}>
             <div style={{ background: fill, color: "#fff", padding: "3px 9px", borderRadius: 10, fontWeight: 800, fontSize: 13, display: "inline-flex", alignItems: "center", fontFamily: "'Be Vietnam Pro'", whiteSpace: "nowrap" }}>
               <Frac n={n} d={d} size={15} color="#fff" />
@@ -209,9 +219,9 @@ function NumberLine({ min = -2, max = 2, denom = 1, value, onChange, mirror = fa
         <text x={toX(0)} y={y + 28} textAnchor="middle" style={{ fontFamily: "'Be Vietnam Pro'", fontWeight: 800, fill: C.coral, fontSize: 15 }}>O</text>
         {mirror && value != null && Math.abs(value) > 1e-9 && (<>
           <line x1={toX(value)} y1={y + 22} x2={toX(-value)} y2={y + 22} stroke={C.violet} strokeWidth={2} strokeDasharray="4 4" opacity={0.6} />
-          <Dot v={-value} fill={C.violet} />
+          <Dot v={-value} fill={C.violet} lift={liftFor(-value)} />
         </>)}
-        {secondary != null && <Dot v={secondary} fill={C.violet} />}
+        {secondary != null && <Dot v={secondary} fill={C.violet} lift={liftFor(secondary)} />}
         {value != null && (
           <g onMouseDown={() => interactive && setDragging(true)} onTouchStart={() => interactive && setDragging(true)} style={{ cursor: interactive ? "grab" : "default" }}>
             <circle cx={toX(value)} cy={y} r={20} fill="transparent" />
@@ -473,7 +483,7 @@ function NumberLineBlock({ s, award }) {
           <Frac n={bn} d={lcd} size={20} color={C.violet} /><span style={{ fontWeight: 800 }}>=</span><Frac n={p.b[0]} d={p.b[1]} size={22} color={C.violet} />
         </>)}
       </div>
-      <NumberLine min={s.min} max={s.max} denom={lcd > 8 ? 4 : lcd} value={av} secondary={bv} interactive={false} snap={false} />
+      <NumberLine min={s.min} max={s.max} denom={lcd > 8 ? 4 : lcd} value={av} secondary={bv} interactive={false} snap={false} height={158} />
       <div style={{ textAlign: "center", marginTop: 8 }}><HowTo>Nhìn trục số rồi bấm chọn một trong ba nút so sánh bên dưới.</HowTo></div>
       <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 4 }}>
         {[["lt", "Cam < Tím"], ["eq", "Bằng nhau"], ["gt", "Cam > Tím"]].map(([k, lb]) => (
