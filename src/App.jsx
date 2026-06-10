@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Activity, Check, X, ArrowRight, Star, Sparkles, Target, Scale, Hash,
   MoveHorizontal, Trophy, Lightbulb, ChevronDown, RefreshCw, BookOpen, Plus, Globe, HelpCircle,
-  Hand, MousePointerClick, Keyboard
+  Hand, MousePointerClick, Keyboard, List
 } from "lucide-react";
 
 /* ════════════════════════════════════════════════════════════════
@@ -2107,6 +2107,14 @@ const LESSONS = [BAI_1, BAI_2, BAI_3, BAI_4, BAI_5, BAI_6, BAI_7, BAI_8, BAI_9, 
 export default function App() {
   const [lessonIdx, setLessonIdx] = useState(0);
   const [starsByLesson, setStarsByLesson] = useState({});
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
+  useEffect(() => {
+    const onR = () => setVw(window.innerWidth);
+    window.addEventListener("resize", onR);
+    return () => window.removeEventListener("resize", onR);
+  }, []);
+  const isMobile = vw < 640;
   const lesson = LESSONS[lessonIdx];
   const stars = starsByLesson[lessonIdx] || {};
   const award = (id) => setStarsByLesson((p) => {
@@ -2160,19 +2168,43 @@ export default function App() {
       </header>
 
       <div style={{ position: "sticky", top: 0, zIndex: 20, background: C.paper + "EE", backdropFilter: "blur(6px)", borderBottom: "2px solid " + C.ink + "22", marginTop: 12 }}>
-        <div style={{ maxWidth: 860, margin: "0 auto", padding: "10px 20px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: "10px 16px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {isMobile ? (
+            <button onClick={() => setMenuOpen((o) => !o)} aria-expanded={menuOpen}
+              style={{ ...btnGhost, padding: "9px 14px", fontSize: 14, flex: 1, justifyContent: "space-between" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><List size={16} /> Mục lục các trạm</span>
+              <ChevronDown size={18} style={{ transition: "transform .15s", transform: menuOpen ? "rotate(180deg)" : "none" }} />
+            </button>
+          ) : (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>
+              {lesson.stations.map((s) => (
+                <button key={s.id} onClick={() => go(s.id)} style={{ background: "transparent", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink, padding: "5px 8px", borderRadius: 8, fontFamily: "'Be Vietnam Pro'" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = C.ink + "12")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                  {s.num}. {s.title.length > 16 ? s.title.slice(0, 15) + "…" : s.title}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+            {isMobile ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 800, fontSize: 14 }}><Star size={18} fill={C.amber} color={C.amber} /> {earned}/{total}</span>
+            ) : (
+              Array.from({ length: total }).map((_, i) => <Star key={i} size={19} fill={i < earned ? C.amber : "transparent"} color={i < earned ? C.amber : C.ink + "44"} />)
+            )}
+          </div>
+        </div>
+        {isMobile && menuOpen && (
+          <div style={{ maxWidth: 860, margin: "0 auto", padding: "0 12px 10px", display: "grid", gap: 4, maxHeight: "62vh", overflowY: "auto" }}>
             {lesson.stations.map((s) => (
-              <button key={s.id} onClick={() => go(s.id)} style={{ background: "transparent", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink, padding: "5px 8px", borderRadius: 8, fontFamily: "'Be Vietnam Pro'" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = C.ink + "12")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                {s.num}. {s.title.length > 16 ? s.title.slice(0, 15) + "…" : s.title}
+              <button key={s.id} onClick={() => { setMenuOpen(false); setTimeout(() => go(s.id), 70); }}
+                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: stars[s.id] ? C.teal + "18" : "#fff", border: "1.5px solid " + C.ink + "22", cursor: "pointer", fontWeight: 700, fontSize: 14, color: C.ink, padding: "10px 12px", borderRadius: 10, fontFamily: "'Be Vietnam Pro'" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: 7, background: C.ink, color: C.paper, fontSize: 12, fontWeight: 800, flexShrink: 0 }}>{s.num}</span>
+                <span style={{ flex: 1 }}>{s.title}</span>
+                {stars[s.id] && <Star size={15} fill={C.amber} color={C.amber} style={{ flexShrink: 0 }} />}
               </button>
             ))}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            {Array.from({ length: total }).map((_, i) => <Star key={i} size={19} fill={i < earned ? C.amber : "transparent"} color={i < earned ? C.amber : C.ink + "44"} />)}
-          </div>
-        </div>
+        )}
       </div>
 
       <main style={{ maxWidth: 860, margin: "0 auto", padding: "26px 20px 60px" }}>
