@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Activity, Check, X, ArrowRight, Star, Sparkles, Target, Scale, Hash,
-  MoveHorizontal, Trophy, Lightbulb, ChevronDown, RefreshCw, BookOpen, Plus
+  MoveHorizontal, Trophy, Lightbulb, ChevronDown, RefreshCw, BookOpen, Plus, Globe
 } from "lucide-react";
 
 /* ════════════════════════════════════════════════════════════════
@@ -34,6 +34,8 @@ import {
                       "bisector" (tia phân giác) | "transversal" (so le trong & đồng vị, có nút chuyển) |
                       "triangle" (hai góc kéo được, góc thứ ba tự tính — tổng 180°)
                       props: prompt?, start?, start2?, sliderLabel?
+   9) "reallife"    → "Ứng dụng vào đời sống": thẻ bấm mở từng tình huống thực tế (có sao khi mở hết)
+                      props: prompt?, cards:[{emoji, label, detail}]
 
    NỘI DUNG (body/detail/q…) có thể là chuỗi, HOẶC mảng "token" để chèn toán:
      "Bình thường" | {b:"in đậm"} | {hl:"tô màu"} | {frac:[3,2]} | {sup:"2"}
@@ -116,6 +118,8 @@ function RichText({ content }) {
         if (t.b) return <b key={i}>{t.b}</b>;
         if (t.hl) return <b key={i} style={{ color: t.color || C.coral }}>{t.hl}</b>;
         if (t.sup) return <sup key={i} style={{ fontWeight: 800 }}>{t.sup}</sup>;
+        if (t.br != null) return <br key={i} />;
+        if (t.step != null) return <span key={i} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 999, background: C.violet, color: "#fff", fontSize: 13, fontWeight: 800, margin: "0 6px 0 0", verticalAlign: "middle" }}>{t.step}</span>;
         return null;
       })}
     </>
@@ -131,6 +135,8 @@ function richToText(content) {
     if (t.b) return t.b;
     if (t.hl) return t.hl;
     if (t.sup) return "^" + t.sup;
+    if (t.br != null) return "\n";
+    if (t.step != null) return `(${t.step}) `;
     return "";
   }).join("");
 }
@@ -220,7 +226,7 @@ const Pill = ({ children, bg = C.violet }) => (
 const inputBox = { display: "block", width: "100%", marginTop: 6, padding: "10px 12px", border: "2.5px solid " + C.ink, borderRadius: 12, fontSize: 18, fontWeight: 700, fontFamily: "'Be Vietnam Pro'", color: C.ink, boxSizing: "border-box" };
 const btnPrimary = { background: C.coral, color: "#fff", border: "2.5px solid " + C.ink, borderRadius: 14, padding: "11px 20px", fontWeight: 800, fontSize: 16, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: "'Be Vietnam Pro'", boxShadow: "3px 3px 0 " + C.ink };
 const btnGhost = { background: "#fff", color: C.ink, border: "2.5px solid " + C.ink, borderRadius: 14, padding: "10px 16px", fontWeight: 700, fontSize: 15, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "'Be Vietnam Pro'" };
-const ICON = { activity: Activity, hash: Hash, mirror: RefreshCw, move: MoveHorizontal, scale: Scale, trophy: Trophy, plus: Plus, book: BookOpen };
+const ICON = { activity: Activity, hash: Hash, mirror: RefreshCw, move: MoveHorizontal, scale: Scale, trophy: Trophy, plus: Plus, book: BookOpen, globe: Globe };
 
 function StationShell({ s, children }) {
   const Icon = ICON[s.icon] || Sparkles;
@@ -321,6 +327,39 @@ function RevealBlock({ s, award }) {
         </div>
       )}
     </>
+  );
+}
+
+function RealLifeBlock({ s, award }) {
+  const [open, setOpen] = useState(null);
+  const [seen, setSeen] = useState(new Set());
+  const tap = (i) => {
+    setOpen(open === i ? null : i);
+    const ns = new Set(seen); ns.add(i); setSeen(ns);
+    if (ns.size === s.cards.length) award();
+  };
+  return (
+    <Card style={{ background: C.teal + "12", borderColor: C.teal }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, letterSpacing: 1, fontWeight: 800, color: C.teal, textTransform: "uppercase", marginBottom: 8 }}>
+        <Globe size={16} /> Ứng dụng vào đời sống
+      </div>
+      <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}>
+        <RichText content={s.prompt || ["Những gì vừa học không chỉ nằm trên giấy. Bấm từng tình huống để xem nó xuất hiện thế nào trong cuộc sống hằng ngày:"]} />
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        {s.cards.map((c, i) => (
+          <button key={i} onClick={() => tap(i)} style={{ background: open === i ? C.teal : "#fff", color: open === i ? "#fff" : C.ink, border: "2.5px solid " + C.ink, borderRadius: 14, padding: "12px 18px", fontWeight: 800, fontSize: 16, cursor: "pointer", boxShadow: open === i ? "none" : "3px 3px 0 rgba(22,36,63,0.18)", transform: open === i ? "translate(3px,3px)" : "none", transition: "all .12s", display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 20 }}>{c.emoji}</span><RichText content={c.label} />
+          </button>
+        ))}
+      </div>
+      {open !== null && (
+        <div style={{ marginTop: 14, padding: 16, background: "#fff", border: "2px solid " + C.teal, borderRadius: 14, display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <Lightbulb color={C.amber} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span style={{ color: C.ink, fontWeight: 500, lineHeight: 1.55 }}><RichText content={s.cards[open].detail} /></span>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -907,6 +946,7 @@ function renderBlock(s, award) {
     case "text": return <TextBlock s={s} />;
     case "calculator": return <CalculatorBlock s={s} award={award} />;
     case "reveal": return <RevealBlock s={s} award={award} />;
+    case "reallife": return <RealLifeBlock s={s} award={award} />;
     case "numberline": return <NumberLineBlock s={s} award={award} />;
     case "fillin": return <FillInBlock s={s} award={award} />;
     case "decimal": return <DecimalBlock s={s} award={award} />;
@@ -931,24 +971,37 @@ const BAI_1 = {
       bands: [{ max: 0.42, name: "Gầy", color: "#6B8FE8" }, { max: 0.52, name: "Tốt", color: C.teal }, { max: 0.57, name: "Hơi béo", color: C.amber }, { max: 0.63, name: "Thừa cân", color: "#FF914D" }, { max: 99, name: "Béo phì", color: C.coral }],
       onResultNote: ["Chỉ số là một ", { b: "tỉ số" }, " = một ", { b: "phân số" }, ". Số nguyên, số thập phân hay phân số đều quy về cùng một loại số: ", { hl: "số hữu tỉ" }, " — nhân vật chính của bài!"] },
     { id: "def", num: 1, title: "Số hữu tỉ là gì?", icon: "hash", type: "text", variant: "definition", title2: "ĐỊNH NGHĨA",
-      body: ["Số hữu tỉ là số viết được dưới dạng phân số ", { frac: [" a", " b"], color: C.amber, size: 22 }, " với ", { hl: "a, b ∈ ℤ", color: C.amber }, " và ", { hl: "b ≠ 0", color: C.amber }, ". Tập hợp số hữu tỉ kí hiệu là ℚ."] },
-    { id: "reveal", num: 2, title: "Mọi số đều \"biến hình\" thành phân số", icon: "hash", type: "reveal",
-      prompt: "Bấm từng số để xem nó viết lại thành phân số:",
+      body: ["Số hữu tỉ là những số ", { hl: "viết được dưới dạng phân số", color: C.amber }, " ", { frac: [" a", " b"], color: C.amber, size: 22 }, " (a là tử số ở trên, b là mẫu số ở dưới), trong đó a và b là ", { hl: "số nguyên", color: C.amber }, " và mẫu ", { hl: "b khác 0", color: C.amber }, ".", { br: 1 }, { br: 1 }, "Viết gọn bằng kí hiệu: ", { hl: "a, b ∈ ℤ", color: C.amber }, " và ", { hl: "b ≠ 0", color: C.amber }, ". Cả nhóm số hữu tỉ có tên gọi chung là ", { hl: "ℚ", color: C.amber }, "."] },
+    { id: "symbols", num: 2, title: "Đọc các kí hiệu lạ thế nào?", icon: "book", type: "text", variant: "note", title2: "GIẢI NGHĨA KÍ HIỆU",
+      body: [
+        { b: "ℤ" }, " là tập hợp các ", { b: "số nguyên" }, ": …, −3, −2, −1, 0, 1, 2, 3, … — đó là những số ", { hl: "không có phần thập phân", color: C.violet }, ", gồm cả số âm, số 0 và số dương.", { br: 1 }, { br: 1 },
+        { b: "∈" }, " đọc là “", { hl: "thuộc", color: C.violet }, "”. Vậy “a, b ∈ ℤ” đọc là “a và b đều là số nguyên”.", { br: 1 }, { br: 1 },
+        { b: "b ≠ 0" }, " đọc là “", { hl: "b khác 0", color: C.violet }, "”, tức mẫu số không được bằng 0 — vì trong toán không bao giờ được chia cho 0.", { br: 1 }, { br: 1 },
+        { b: "ℚ" }, " chỉ là ", { hl: "tên gọi chung", color: C.violet }, " của tất cả số hữu tỉ, giống như “lớp 7A” là tên gọi của cả lớp vậy."] },
+    { id: "reveal", num: 3, title: "Mọi số đều \"biến hình\" thành phân số", icon: "hash", type: "reveal",
+      prompt: "Mấy số dưới đây trông rất khác nhau, nhưng số nào cũng viết thành phân số được. Bấm từng số để xem cách biến đổi từng bước:",
       cards: [
-        { label: "−7", detail: ["−7 = ", { frac: [-7, 1], color: C.teal }, " — số nguyên cũng là số hữu tỉ"] },
-        { label: "0,6", detail: ["0,6 = ", { frac: [6, 10], color: C.teal }, " = ", { frac: [3, 5], color: C.teal }] },
-        { label: "2⅗", detail: ["2⅗ = ", { frac: [13, 5], color: C.teal }, " — hỗn số cũng là số hữu tỉ"] },
-        { label: "−1,2", detail: ["−1,2 = ", { frac: [-12, 10], color: C.teal }, " = ", { frac: [-6, 5], color: C.teal }] },
-        { label: "0", detail: ["0 = ", { frac: [0, 1], color: C.teal }, " — số 0 vẫn là số hữu tỉ"] },
+        { label: "−7", detail: ["−7 đọc là ", { b: "âm bảy" }, ", là một số nguyên.", { br: 1 }, "Mẹo: số nào chia cho 1 cũng giữ nguyên, nên −7 = ", { frac: [-7, 1], color: C.teal }, ".", { br: 1 }, "→ Vậy số nguyên cũng là số hữu tỉ."] },
+        { label: "0,6", detail: ["0,6 đọc là “không phẩy sáu”, nghĩa là ", { b: "sáu phần mười" }, ".", { br: 1 }, { step: 1 }, "Viết thành phân số: 0,6 = ", { frac: [6, 10], color: C.teal }, ".", { br: 1 }, { step: 2 }, "Rút gọn (chia cả tử và mẫu cho 2): ", { frac: [6, 10], color: C.teal }, " = ", { frac: [3, 5], color: C.teal }, "."] },
+        { label: "2⅗", detail: ["2⅗ là một ", { b: "hỗn số" }, " — gồm một phần nguyên là ", { b: "2" }, " và một phân số là ", { frac: [3, 5] }, " (hiểu là 2 cái bánh nguyên, cộng thêm ", { frac: [3, 5] }, " cái bánh nữa).", { br: 1 }, { step: 1 }, "Đổi hỗn số ra phân số: lấy phần nguyên nhân mẫu rồi cộng tử → ", { hl: "2 × 5 + 3 = 13" }, ", còn mẫu giữ nguyên là 5.", { br: 1 }, { step: 2 }, "Vậy 2⅗ = ", { frac: [13, 5], color: C.teal }, ".", { br: 1 }, "→ Hỗn số cũng là số hữu tỉ."] },
+        { label: "−1,2", detail: ["−1,2 nghĩa là ", { b: "mười hai phần mười" }, " và mang dấu âm.", { br: 1 }, { step: 1 }, "Viết thành phân số: −1,2 = ", { frac: [-12, 10], color: C.teal }, ".", { br: 1 }, { step: 2 }, "Rút gọn (chia cả tử và mẫu cho 2): ", { frac: [-12, 10], color: C.teal }, " = ", { frac: [-6, 5], color: C.teal }, "."] },
+        { label: "0", detail: ["Ngay cả số 0 cũng viết được thành phân số: 0 = ", { frac: [0, 1], color: C.teal }, " (vì 0 chia cho 1 vẫn bằng 0).", { br: 1 }, "→ Vậy số 0 cũng là số hữu tỉ."] },
       ] },
-    { id: "opp", num: 3, title: "Số đối — phép soi gương qua O", icon: "mirror", type: "numberline", mode: "mirror", min: -2, max: 2, denom: 4, start: 1.5,
-      prompt: ["Mỗi số a có một số đối −a. Kéo chấm ", { hl: "cam", color: C.coral }, " — chấm ", { hl: "tím", color: C.violet }, " luôn cách O đúng bằng khoảng đó nhưng ở phía ngược lại."] },
-    { id: "place", num: 4, title: "Đặt số hữu tỉ lên trục số", icon: "move", type: "numberline", mode: "place", min: -2, max: 2,
+    { id: "opp", num: 4, title: "Số đối — phép soi gương qua O", icon: "mirror", type: "numberline", mode: "mirror", min: -2, max: 2, denom: 4, start: 1.5,
+      prompt: ["Mỗi số a có một ", { hl: "số đối", color: C.coral }, ", kí hiệu là −a. ", { b: "Số đối chỉ khác nhau ở dấu" }, ": số đối của 2 là −2, số đối của −3 là 3 (chữ O ở đây là điểm số 0 trên trục).", { br: 1 }, "Kéo thử chấm ", { hl: "cam", color: C.coral }, " xem — chấm ", { hl: "tím", color: C.violet }, " (số đối) luôn cách điểm 0 đúng bằng khoảng đó nhưng ở phía ngược lại, như soi gương."] },
+    { id: "place", num: 5, title: "Đặt số hữu tỉ lên trục số", icon: "move", type: "numberline", mode: "place", min: -2, max: 2,
       targets: [{ n: 3, d: 2 }, { n: -3, d: 2 }, { n: 5, d: 4 }, { n: -5, d: 4 }] },
-    { id: "cmp", num: 5, title: "So sánh hai số hữu tỉ", icon: "scale", type: "numberline", mode: "compare", min: -3, max: 3,
+    { id: "cmp", num: 6, title: "So sánh hai số hữu tỉ", icon: "scale", type: "numberline", mode: "compare", min: -3, max: 3,
       pairs: [{ a: [3, 5], b: [4, 5] }, { a: [7, 10], b: [6, 5] }, { a: [-5, 2], b: [-17, 8] }, { a: [-3, 2], b: [-1, 1] }],
-      note: ["Tính chất bắc cầu: nếu a < b và b < c thì a < c. Ví dụ 0,7 < 1 < ", { frac: [6, 5] }, " nên 0,7 < ", { frac: [6, 5] }, "."] },
-    { id: "quiz", num: 6, title: "Luyện tập tổng hợp", icon: "trophy", type: "quiz",
+      note: ["“Bắc cầu” nghĩa là so sánh nhờ một số trung gian: nếu a < b và b < c thì chắc chắn a < c.", { br: 1 }, "Ví dụ 0,7 < 1 và 1 < ", { frac: [6, 5] }, " (vì ", { frac: [6, 5] }, " = 1,2), nên suy ra 0,7 < ", { frac: [6, 5] }, "."] },
+    { id: "reallife", num: 7, title: "Số hữu tỉ quanh ta", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🌡️", label: "Nhiệt độ", detail: ["Bản tin thời tiết ghi Sa Pa ", { b: "−2,5°C" }, ", ngăn đá tủ lạnh ", { b: "−18°C" }, ". Mọi nhiệt độ đo được — âm, dương hay 0 — đều là ", { hl: "số hữu tỉ" }, "."] },
+      { emoji: "🍕", label: "Chia phần", detail: ["Cắt một chiếc pizza cho 8 người, mỗi người được ", { frac: [1, 8] }, " chiếc. Khi chia phần là ta đang dùng phân số — tức ", { hl: "số hữu tỉ" }, "."] },
+      { emoji: "💰", label: "Tiền & tỉ số", detail: ["Giảm “bớt ", { frac: [1, 3] }, " giá”, tỉ số trận đấu 2/1, điểm trung bình 8,5… đều viết được dạng ", { frac: ["a", "b"] }, " nên đều là số hữu tỉ."] },
+    ] },
+
+    { id: "quiz", num: 8, title: "Luyện tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Khẳng định nào đúng?", opts: ["−235 ∉ ℚ", "−6/7 ∈ ℚ", "ℚ chỉ gồm số dương"], correct: 1,
           exp: "Mọi phân số mẫu khác 0 đều thuộc ℚ.",
@@ -1022,7 +1075,14 @@ const BAI_2 = {
         { ask: "Tính 1,25 · (−4,6)", answer: -5.75, hint: "Hai số thập phân khác dấu: 1,25 · 4,6 = 5,75 → kết quả −5,75." },
       ] },
 
-    { id: "exercises", num: 8, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 8, title: "Tính toán mỗi ngày", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🛒", label: "Đi chợ", detail: ["Mua 1,5 kg táo (32 000đ/kg) và 0,75 kg nho (80 000đ/kg). Tổng tiền = ", { b: "1,5 × 32 000 + 0,75 × 80 000 = 108 000đ" }, " — nhân rồi cộng số hữu tỉ."] },
+      { emoji: "🏦", label: "Tài khoản", detail: ["Tài khoản đang nợ ", { b: "−50 000đ" }, ", nạp thêm 200 000đ thì còn −50 000 + 200 000 = ", { hl: "150 000đ" }, ". Cộng số âm với số dương như trong bài."] },
+      { emoji: "🍲", label: "Nấu ăn", detail: ["Công thức cần ", { frac: [3, 4] }, " lít nước, nhưng nấu nửa khẩu phần → chỉ cần ", { frac: [3, 4] }, " × ", { frac: [1, 2] }, " = ", { frac: [3, 8] }, " lít. Nhân phân số."] },
+    ] },
+
+    { id: "exercises", num: 9, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Nhiệt độ tại Sa Pa là −0,7°C, tại Lào Cai là 9,6°C. Lào Cai cao hơn Sa Pa bao nhiêu °C?",
           opts: ["8,9°C", "10,3°C", "9,6°C"], correct: 1,
@@ -1080,7 +1140,14 @@ const BAI_3 = {
         { ask: "(−5)⁵ : (−5)⁵ = ? Nhập giá trị.", answer: 1, hint: "Số mũ 5 − 5 = 0, mà x⁰ = 1 với x ≠ 0." },
       ] },
 
-    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 5, title: "Sức mạnh của luỹ thừa", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "💾", label: "Bộ nhớ máy tính", detail: ["1 KB = ", { b: "2¹⁰" }, " byte, 1 MB = 2²⁰ byte… Dung lượng máy tính luôn tính theo ", { hl: "luỹ thừa của 2" }, "."] },
+      { emoji: "🦠", label: "Nhân đôi", detail: ["Một tế bào cứ mỗi giờ tách đôi: sau n giờ có ", { b: "2ⁿ" }, " tế bào. Sau 10 giờ là 2¹⁰ = 1024 — tăng cực nhanh."] },
+      { emoji: "🌍", label: "Số rất lớn", detail: ["Khoảng cách, khối lượng nguyên tử hay viết gọn bằng luỹ thừa của 10, ví dụ vận tốc ánh sáng ", { b: "3 × 10⁸ m/s" }, "."] },
+    ] },
+
+    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Viết 125 dưới dạng luỹ thừa của 5.", opts: [["5", { sup: "2" }], ["5", { sup: "3" }], ["5", { sup: "4" }]], correct: 1,
           solution: "5 · 5 · 5 = 125 nên 125 = 5³." },
@@ -1147,7 +1214,14 @@ const BAI_4 = {
           hint: "Thịt = 0,8 − (0,5 + 0,125 + 0,04) = 0,8 − 0,665 = 0,135 kg." },
       ] },
 
-    { id: "ex", num: 7, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 7, title: "Tính đúng thứ tự, tìm ẩn số", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🧾", label: "Hoá đơn", detail: ["Mua 3 quyển vở (12 000đ) và 1 bút (8 000đ): tính ", { b: "3 × 12 000 + 8 000 = 44 000đ" }, " (nhân trước, cộng sau). Sai thứ tự là sai tiền!"] },
+      { emoji: "⚖️", label: "Tìm x", detail: ["Tổng hai vật là 5 kg, một vật 1,8 kg thì vật kia x thoả x + 1,8 = 5 → ", { hl: "x = 5 − 1,8 = 3,2 kg" }, ". Đúng quy tắc chuyển vế."] },
+      { emoji: "🍳", label: "Chia tiền", detail: ["Hoá đơn 340 000đ, một bạn trả trước 100 000đ. Ba người còn lại mỗi người trả x: 3x + 100 000 = 340 000 → ", { hl: "x = 80 000đ" }, "."] },
+    ] },
+
+    { id: "ex", num: 8, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Cân thăng bằng: 5,1 + x = 7. Quả bưởi (x) nặng bao nhiêu?",
           opts: ["1,9 kg", "2,9 kg", "12,1 kg"], correct: 0,
@@ -1206,7 +1280,14 @@ const BAI_5 = {
         { ask: "Làm tròn π = 3,14159… đến hàng phần trăm.", answer: 3.14, hint: "Chữ số sau hàng phần trăm là 1 < 5 → ≈ 3,14." },
       ] },
 
-    { id: "ex", num: 7, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 7, title: "Làm tròn trong cuộc sống", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "💵", label: "Tiền lẻ", detail: ["Chia 100 000đ cho 3 người = 33 333,33…đ (vô hạn tuần hoàn). Thực tế phải ", { hl: "làm tròn" }, " còn 33 000đ mỗi người."] },
+      { emoji: "⛽", label: "Đổ xăng", detail: ["Đồng hồ hiện 1,837 lít nhưng số tiền luôn được làm tròn đến ", { b: "đồng" }, ". Mọi máy đo đều làm tròn."] },
+      { emoji: "📏", label: "Đo đạc", detail: ["Cân nặng 42,7 kg, chiều cao 1,58 m… máy đo luôn cho số đã ", { hl: "làm tròn đến độ chính xác" }, " của nó, không bao giờ vô hạn chữ số."] },
+    ] },
+
+    { id: "ex", num: 8, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: ["Kết quả phép chia 1 cho 9, tức ", { frac: [1, 9] }, ", là số thập phân loại nào?"],
           opts: ["Hữu hạn", "Vô hạn tuần hoàn, chu kì 1", "Vô hạn nhưng không tuần hoàn"], correct: 1,
@@ -1265,7 +1346,14 @@ const BAI_6 = {
       presets: [{ label: "√91", values: { a: 91 } }, { label: "√15", values: { a: 15 } }, { label: "√52198,16 (đáy kim tự tháp)", values: { a: 52198.16 } }],
       onResultNote: ["Máy chỉ hiện một số chữ số nên kết quả đã được làm tròn. Ví dụ √91 ≈ 9,5394 (đến chữ số thập phân thứ tư) hoặc ≈ 9,5 (độ chính xác 0,05)."] },
 
-    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 6, title: "Căn bậc hai ngoài đời", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "📺", label: "Màn hình TV", detail: ["TV “55 inch” là độ dài ", { b: "đường chéo" }, ". Từ chiều rộng và cao, đường chéo = √(rộng² + cao²) — phải khai căn."] },
+      { emoji: "🪜", label: "Đường chéo", detail: ["Nền nhà vuông cạnh 3 m có đường chéo = ", { b: "√(3² + 3²)" }, " = √18 ≈ ", { hl: "4,24 m" }, " — một số vô tỉ."] },
+      { emoji: "📐", label: "Diện tích → cạnh", detail: ["Mảnh đất vuông rộng 50 m² thì cạnh = ", { b: "√50" }, " ≈ 7,07 m. Từ diện tích tìm cạnh luôn cần căn bậc hai."] },
+    ] },
+
+    { id: "ex", num: 7, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Cho biết 153² = 23409. Tính √23409.", opts: ["153", "151", "1530"], correct: 0,
           solution: "√23409 = √(153²) = 153 (vì 153 > 0)." },
@@ -1325,7 +1413,14 @@ const BAI_7 = {
         { ask: "Tìm giá trị dương của x biết |x| = 2,5", answer: 2.5, hint: "|x| = 2,5 → x = 2,5 hoặc x = −2,5; giá trị dương là 2,5." },
       ] },
 
-    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 6, title: "Số thực đong đầy cuộc sống", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "📏", label: "Đo liên tục", detail: ["Chiều cao, cân nặng, nhiệt độ, thời gian… mọi đại lượng đo được lấp đầy ", { hl: "trục số thực" }, " — giữa hai số luôn còn vô số số khác."] },
+      { emoji: "🥧", label: "Số π", detail: ["Chu vi bánh xe = π × đường kính, với π ≈ 3,14159… là ", { b: "số vô tỉ" }, ", vẫn là một số thực trên trục số."] },
+      { emoji: "🧭", label: "Định vị GPS", detail: ["Toạ độ như 21,0278 ; 105,8342 là số thực. Mỗi điểm trên bản đồ ứng với một ", { hl: "số thực" }, "."] },
+    ] },
+
+    { id: "ex", num: 7, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Cách viết nào sau đây đúng?", opts: ["√2 ∈ ℚ", "π ∈ 𝕀", "15 ∉ ℝ"], correct: 1,
           solution: "√2 là số vô tỉ nên √2 ∉ ℚ; 15 là số thực nên 15 ∈ ℝ. Chỉ có π ∈ 𝕀 (π là số vô tỉ) là đúng." },
@@ -1377,7 +1472,14 @@ const BAI_8 = {
           figure: { kind: "bisector", a: 70, hide: true, caption: "Ot chia đôi góc mOn = 70°" } },
       ] },
 
-    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 6, title: "Góc ở khắp nơi", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🕐", label: "Đồng hồ", detail: ["Lúc 3 giờ, kim giờ và kim phút tạo ", { b: "góc vuông 90°" }, "; lúc 6 giờ là ", { hl: "góc bẹt 180°" }, "."] },
+      { emoji: "📄", label: "Gấp giấy", detail: ["Gấp đôi một góc giấy cho hai cạnh trùng nhau — nếp gấp chính là ", { hl: "tia phân giác" }, " chia góc thành hai phần bằng nhau."] },
+      { emoji: "🏠", label: "Xây dựng", detail: ["Thợ dùng ke vuông để dựng tường ", { b: "90°" }, "; mái nhà, cầu thang đều thiết kế theo các góc đặc biệt cho chắc và đẹp."] },
+    ] },
+
+    { id: "ex", num: 7, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Hai góc kề bù có tổng số đo bằng bao nhiêu?", opts: ["90°", "180°", "360°"], correct: 1,
           figure: { kind: "kebu", a: 115, caption: "Hai góc kề bù" },
@@ -1431,7 +1533,14 @@ const BAI_9 = {
           figure: { kind: "parallel", a: 50, mark: "trongcungphia", la: "?", lb: "50°", ans: "130°", caption: "Hai góc trong cùng phía bù nhau" } },
       ] },
 
-    { id: "ex", num: 4, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 4, title: "Song song quanh ta", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🛤️", label: "Đường ray", detail: ["Hai thanh ray xe lửa luôn ", { hl: "song song" }, ", cách đều nhau và không bao giờ cắt — nếu cắt thì tàu trật bánh!"] },
+      { emoji: "📒", label: "Dòng kẻ vở", detail: ["Các dòng kẻ ngang trên trang vở là những đường thẳng song song giúp chữ viết thẳng hàng."] },
+      { emoji: "🚧", label: "Vạch kẻ đường", detail: ["Hai vạch sơn của một làn xe song song nhau; ", { b: "góc so le trong bằng nhau" }, " là dấu hiệu nhận biết song song."] },
+    ] },
+
+    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Để hai đường thẳng a, b song song, một cặp góc so le trong phải như thế nào?",
           figure: { kind: "parallel", a: 50, mark: "soletrong", la: "50°", lb: "50°", caption: "Cặp góc so le trong" },
@@ -1491,7 +1600,14 @@ const BAI_10 = {
           figure: { kind: "parallel", a: 70, mark: "trongcungphia", la: "?", lb: "70°", ans: "110°", caption: "Hai góc trong cùng phía bù nhau (= 180°)" } },
       ] },
 
-    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 5, title: "Một đường song song duy nhất", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🗺️", label: "Quy hoạch", detail: ["Vẽ con đường mới song song với đường cũ: qua một điểm chỉ kẻ được ", { hl: "đúng một đường" }, " song song — đó là tiên đề Euclid."] },
+      { emoji: "🏗️", label: "Xây nhà", detail: ["Hai tầng nhà có sàn song song; thợ dùng tính chất ", { b: "góc đồng vị bằng nhau" }, " để kiểm tra sàn có thật sự song song."] },
+      { emoji: "🪟", label: "Khung cửa", detail: ["Các thanh ngang của khung cửa song song; nhờ tiên đề Euclid mà mỗi thanh chỉ có một vị trí song song chuẩn."] },
+    ] },
+
+    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Qua một điểm ngoài một đường thẳng, có bao nhiêu đường thẳng song song với nó?",
           figure: { kind: "euclid", caption: "Tiên đề Euclid" },
@@ -1548,7 +1664,14 @@ const BAI_11 = {
         { label: "B3", detail: ["Từ đó Ô₁ + Ô₃ = Ô₂ + Ô₃, suy ra ", { hl: "Ô₁ = Ô₂", color: C.teal }, " (hai góc đối đỉnh bằng nhau)."] },
       ] },
 
-    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 5, title: "Lập luận chặt chẽ mỗi ngày", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🔍", label: "Suy luận", detail: ["Bác sĩ chẩn bệnh, thám tử phá án… đều đi từ ", { b: "giả thiết" }, " (triệu chứng, bằng chứng) đến ", { hl: "kết luận" }, " bằng lập luận — như chứng minh định lí."] },
+      { emoji: "⚖️", label: "Toà án", detail: ["Luật sư phải “chứng minh” bằng chứng cứ và lí lẽ, không nói suông. Mỗi bước đều phải có ", { hl: "căn cứ" }, "."] },
+      { emoji: "🧩", label: "Lập trình", detail: ["Máy tính chạy theo logic “nếu… thì…”. Một chương trình đúng cũng là chuỗi suy luận có căn cứ như một bài chứng minh."] },
+    ] },
+
+    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Trong định lí “Nếu hai góc đối đỉnh thì hai góc đó bằng nhau”, đâu là giả thiết?",
           figure: { kind: "crossing", a: 55, caption: "Hai góc đối đỉnh" },
@@ -1599,7 +1722,14 @@ const BAI_12 = {
         { ask: "Tam giác có một góc ngoài bằng 110°, một góc trong không kề bằng 50°. Góc trong không kề còn lại (độ)?", answer: 60, hint: "Góc ngoài = tổng hai góc trong không kề: 110° − 50° = 60°." },
       ] },
 
-    { id: "ex", num: 4, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 4, title: "Tam giác 180° quanh ta", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🏠", label: "Mái nhà", detail: ["Hai mái dốc và xà ngang tạo một tam giác. Biết hai góc dốc, thợ tính ngay góc còn lại vì ", { hl: "tổng ba góc = 180°" }, "."] },
+      { emoji: "📐", label: "Eke", detail: ["Eke tam giác vuông có các góc ", { b: "90° + 60° + 30° = 180°" }, " hoặc 90° + 45° + 45°."] },
+      { emoji: "🌉", label: "Giàn cầu", detail: ["Khung giàn thép hình tam giác rất vững; kĩ sư tính góc từng thanh dựa vào tổng ba góc luôn bằng 180°."] },
+    ] },
+
+    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Tổng ba góc trong một tam giác bằng bao nhiêu?", opts: ["90°", "180°", "360°"], correct: 1,
           figure: { kind: "triangle", b: 60, c: 60, labelA: "60°", labelB: "60°", labelC: "60°", caption: "Tổng ba góc = 180°" },
@@ -1657,7 +1787,14 @@ const BAI_13 = {
           figure: { kind: "two-triangles", names1: ["A", "B", "C"], names2: ["D", "E", "F"], caption: "Góc tương ứng bằng nhau: D ↔ A" } },
       ] },
 
-    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 5, title: "Bằng nhau nhờ ba cạnh", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🏭", label: "Sản xuất hàng loạt", detail: ["Mọi chiếc eke, mọi tấm lợp tam giác cùng khuôn đều ", { hl: "bằng nhau (c.c.c)" }, " vì ba cạnh được cắt giống hệt."] },
+      { emoji: "🔺", label: "Khung vững", detail: ["Tam giác ba cạnh cố định thì hình ", { b: "không méo được" }, " — vì thế giàn giáo, cầu, mái đều dùng hình tam giác."] },
+      { emoji: "✂️", label: "Cắt rập", detail: ["Thợ may dùng một mẫu rập tam giác để cắt nhiều mảnh vải giống nhau — tất cả bằng nhau theo ba cạnh."] },
+    ] },
+
+    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Theo trường hợp c.c.c, để kết luận hai tam giác bằng nhau cần kiểm tra mấy cặp cạnh?",
           figure: { kind: "two-triangles", marks: "ccc", caption: "Trường hợp c.c.c" },
@@ -1717,7 +1854,14 @@ const BAI_14 = {
           figure: { kind: "triangle", b: 80, c: 40, labelA: "?", labelB: "80°", labelC: "40°", ans: "60°" } },
       ] },
 
-    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 5, title: "Đo cái không với tới", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🌊", label: "Bề rộng sông", detail: ["Không qua được sông, người ta dựng hai tam giác bằng nhau ", { b: "(g.c.g)" }, " trên bờ rồi đo đoạn tương ứng để biết ", { hl: "bề rộng sông" }, "."] },
+      { emoji: "🌲", label: "Đo gián tiếp", detail: ["Đo khoảng cách tới cái cây bên kia hàng rào bằng cách tạo một tam giác bằng nó ", { b: "(c.g.c)" }, " ngay chỗ mình đứng."] },
+      { emoji: "🗺️", label: "Trắc địa", detail: ["Kĩ thuật ", { b: "tam giác đạc" }, " trong đo đạc địa hình dựa vào các tam giác bằng nhau để tính khoảng cách lớn mà không đo trực tiếp."] },
+    ] },
+
+    { id: "ex", num: 6, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Góc xen giữa hai cạnh AB và AC của tam giác ABC là góc nào?", opts: ["Góc A", "Góc B", "Góc C"], correct: 0,
           figure: { kind: "triangle", b: 55, c: 65, caption: "Tam giác ABC" },
@@ -1769,7 +1913,14 @@ const BAI_15 = {
           figure: { kind: "right-triangles", marks: "huyen-cgv", caption: "Cạnh huyền 5, cạnh góc vuông 3" } },
       ] },
 
-    { id: "ex", num: 4, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
+    { id: "reallife", num: 4, title: "Góc vuông vững chãi", icon: "globe", type: "reallife",
+    cards: [
+      { emoji: "🪜", label: "Thang dựa tường", detail: ["Chân thang, tường và mặt đất tạo một ", { hl: "tam giác vuông" }, ". Đặt chân thang đúng khoảng cách để góc an toàn, khỏi trượt."] },
+      { emoji: "📐", label: "Kiểm tra góc vuông", detail: ["Thợ xây dùng quy tắc “", { b: "3 – 4 – 5" }, "”: đo 3 và 4, nếu cạnh chéo đúng 5 thì góc đúng 90°."] },
+      { emoji: "🌳", label: "Đo chiều cao", detail: ["Cây và bóng nắng tạo tam giác vuông; hai tam giác vuông bằng nhau cho phép tính ", { hl: "chiều cao" }, " mà không cần trèo lên."] },
+    ] },
+
+    { id: "ex", num: 5, title: "Bài tập tổng hợp", icon: "trophy", type: "quiz",
       questions: [
         { q: "Hai tam giác vuông có hai cạnh góc vuông bằng nhau từng đôi thì bằng nhau (suy từ c.g.c). Đúng hay sai?",
           figure: { kind: "right-triangles", marks: "cgc", caption: "Hai cạnh góc vuông bằng nhau" },
