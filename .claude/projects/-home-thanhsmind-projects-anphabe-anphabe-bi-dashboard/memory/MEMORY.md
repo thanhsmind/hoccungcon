@@ -1,0 +1,2 @@
+- [accounts.customerClass meaning](account-customerclass-meaning.md) — C/C_VIP=khách đã mua, P=đối tác, L_*=lead; source of truth for new vs existing customer (deals table is empty)
+- [Restart Docker after server.py edits](webapp-docker-restart-on-server-change.md) — webapp/server.py is mounted read-only but doesn't auto-reload; `docker restart anphabe-bi-webapp` after backend changes
