@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Activity, Check, X, ArrowRight, Star, Sparkles, Target, Scale, Hash,
-  MoveHorizontal, Trophy, Lightbulb, ChevronDown, RefreshCw, BookOpen, Plus, Globe, HelpCircle
+  MoveHorizontal, Trophy, Lightbulb, ChevronDown, RefreshCw, BookOpen, Plus, Globe, HelpCircle,
+  Hand, MousePointerClick, Keyboard
 } from "lucide-react";
 
 /* ════════════════════════════════════════════════════════════════
@@ -40,6 +41,8 @@ import {
                       props: question, hint?, answer, takeaway?
 
    Trong nội dung còn có token {br} (xuống dòng) và {step:1} (huy hiệu số bước) để diễn giải từng bước.
+   Mỗi trạm tương tác tự hiển thị một dòng hướng dẫn thao tác (component HowTo) ngay trong renderer —
+   không cần khai báo trong dữ liệu bài.
 
    NỘI DUNG (body/detail/q…) có thể là chuỗi, HOẶC mảng "token" để chèn toán:
      "Bình thường" | {b:"in đậm"} | {hl:"tô màu"} | {frac:[3,2]} | {sup:"2"}
@@ -227,6 +230,15 @@ const Card = ({ children, style }) => (
 const Pill = ({ children, bg = C.violet }) => (
   <span style={{ background: bg, color: "#fff", padding: "4px 12px", borderRadius: 20, fontWeight: 700, fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 }}>{children}</span>
 );
+/* hướng dẫn thao tác cho các trạm tương tác — icon: "drag" | "click" | "type" */
+function HowTo({ children, icon = "click" }) {
+  const Ico = icon === "drag" ? Hand : icon === "type" ? Keyboard : MousePointerClick;
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 7, background: C.amber + "26", border: "1.5px dashed " + C.amber, borderRadius: 999, padding: "6px 13px", fontSize: 13.5, fontWeight: 700, color: "#8A5A00", marginBottom: 14, lineHeight: 1.3 }}>
+      <Ico size={16} style={{ flexShrink: 0 }} /> <span>{children}</span>
+    </div>
+  );
+}
 const inputBox = { display: "block", width: "100%", marginTop: 6, padding: "10px 12px", border: "2.5px solid " + C.ink, borderRadius: 12, fontSize: 18, fontWeight: 700, fontFamily: "'Be Vietnam Pro'", color: C.ink, boxSizing: "border-box" };
 const btnPrimary = { background: C.coral, color: "#fff", border: "2.5px solid " + C.ink, borderRadius: 14, padding: "11px 20px", fontWeight: 800, fontSize: 16, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: "'Be Vietnam Pro'", boxShadow: "3px 3px 0 " + C.ink };
 const btnGhost = { background: "#fff", color: C.ink, border: "2.5px solid " + C.ink, borderRadius: 14, padding: "10px 16px", fontWeight: 700, fontSize: 15, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "'Be Vietnam Pro'" };
@@ -279,6 +291,7 @@ function CalculatorBlock({ s, award }) {
   return (
     <Card>
       <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}><RichText content={s.prompt} /></p>
+      <div><HowTo icon="type">{s.presets ? "Gõ số vào các ô (hoặc bấm nút ví dụ có sẵn), rồi bấm nút tính ở dưới." : "Gõ số vào các ô bên dưới, rồi bấm nút tính để xem kết quả."}</HowTo></div>
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${s.inputs.length},1fr)`, gap: 14, marginBottom: 14 }}>
         {s.inputs.map((inp) => (
           <label key={inp.key} style={{ fontWeight: 700, fontSize: 14, color: C.ink }}>{inp.label}
@@ -318,6 +331,7 @@ function RevealBlock({ s, award }) {
     <>
       <p style={{ fontWeight: 700, color: C.ink }}><RichText content={s.prompt} /></p>
       {s.figure && <Figure spec={s.figure} />}
+      <div><HowTo>Bấm vào từng thẻ bên dưới để mở lời giải. Mở hết các thẻ để được sao.</HowTo></div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         {s.cards.map((c, i) => (
           <button key={i} onClick={() => tap(i)} style={{ background: open === i ? C.teal : "#fff", color: open === i ? "#fff" : C.ink, border: "2.5px solid " + C.ink, borderRadius: 14, padding: "14px 20px", fontWeight: 800, fontSize: 20, cursor: "pointer", minWidth: 84, boxShadow: open === i ? "none" : "3px 3px 0 rgba(22,36,63,0.18)", transform: open === i ? "translate(3px,3px)" : "none", transition: "all .12s" }}>
@@ -378,6 +392,7 @@ function RealLifeBlock({ s, award }) {
       <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}>
         <RichText content={s.prompt || ["Những gì vừa học không chỉ nằm trên giấy. Bấm từng tình huống để xem nó xuất hiện thế nào trong cuộc sống hằng ngày:"]} />
       </p>
+      <div><HowTo>Bấm vào từng tình huống để xem giải thích. Xem hết để được sao.</HowTo></div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         {s.cards.map((c, i) => (
           <button key={i} onClick={() => tap(i)} style={{ background: open === i ? C.teal : "#fff", color: open === i ? "#fff" : C.ink, border: "2.5px solid " + C.ink, borderRadius: 14, padding: "12px 18px", fontWeight: 800, fontSize: 16, cursor: "pointer", boxShadow: open === i ? "none" : "3px 3px 0 rgba(22,36,63,0.18)", transform: open === i ? "translate(3px,3px)" : "none", transition: "all .12s", display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -404,6 +419,7 @@ function NumberLineBlock({ s, award }) {
     return (
       <Card>
         <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}><RichText content={s.prompt} /></p>
+        <div><HowTo icon="drag">Dùng chuột (hoặc ngón tay) kéo chấm tròn màu cam dọc theo trục số.</HowTo></div>
         <NumberLine min={s.min} max={s.max} denom={s.denom} value={v} mirror onChange={(x) => { setV(x); if (!touched && Math.abs(x) > 0.01) { setTouched(true); award(); } }} />
         <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap", marginTop: 6 }}>
           <Pill bg={C.coral}>a = <Frac n={n} d={d} size={15} color="#fff" /></Pill>
@@ -421,6 +437,7 @@ function NumberLineBlock({ s, award }) {
       <Card>
         <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}>Chia mỗi đoạn đơn vị thành <b>{t.d}</b> phần bằng nhau rồi đếm. Kéo chấm cam đến đúng vị trí của:</p>
         <div style={{ textAlign: "center", marginBottom: 6 }}><Pill bg={C.coral}>Mục tiêu: <Frac n={t.n} d={t.d} size={18} color="#fff" /></Pill></div>
+        <div><HowTo icon="drag">Kéo chấm tròn màu cam đến đúng vị trí, rồi bấm “Kiểm tra”. Bấm “Câu khác” để đổi đề.</HowTo></div>
         <NumberLine min={s.min} max={s.max} denom={t.d} value={v} onChange={(x) => { setV(x); setRes(null); }} />
         <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 8, flexWrap: "wrap" }}>
           {res === null && <button style={btnPrimary} onClick={check}>Kiểm tra <Check size={18} /></button>}
@@ -447,6 +464,7 @@ function NumberLineBlock({ s, award }) {
         <Frac n={bn} d={lcd} size={20} color={C.violet} /><span style={{ fontWeight: 800 }}>=</span><Frac n={p.b[0]} d={p.b[1]} size={22} color={C.violet} />
       </div>
       <NumberLine min={s.min} max={s.max} denom={lcd > 8 ? 4 : lcd} value={av} secondary={bv} interactive={false} snap={false} />
+      <div style={{ textAlign: "center", marginTop: 8 }}><HowTo>Nhìn trục số rồi bấm chọn một trong ba nút so sánh bên dưới.</HowTo></div>
       <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 4 }}>
         {[["lt", "Cam < Tím"], ["eq", "Bằng nhau"], ["gt", "Cam > Tím"]].map(([k, lb]) => (
           <button key={k} onClick={() => { setPick(k); if (k === correct) award(); }} disabled={pick !== null}
@@ -473,6 +491,7 @@ function FillInBlock({ s, award }) {
   };
   return (
     <div style={{ display: "grid", gap: 12 }}>
+      <div><HowTo icon="type">Gõ đáp số vào ô rồi bấm “Kiểm tra”. Có thể nhập phân số kiểu 3/4 hoặc số thập phân 0,75. Bí thì bấm “Gợi ý”.</HowTo></div>
       {s.questions.map((q, i) => (
         <Card key={i}>
           <div style={{ fontWeight: 700, color: C.ink, marginBottom: 10 }}><RichText content={q.ask} /></div>
@@ -547,6 +566,7 @@ Chỉ viết văn xuôi, không dùng markdown, không gạch đầu dòng.`;
         <Pill bg={C.ink}>Đã nộp {doneCount}/{N}</Pill>
         <Pill bg={C.teal}><Star size={15} fill="#fff" /> Đúng {score}/{N}</Pill>
       </div>
+      <div><HowTo>Với mỗi câu: ① bấm chọn đáp án, ② gõ ngắn gọn cách em làm, rồi ③ bấm “Nộp bài” (nút chỉ bật khi đã làm xong cả hai bước).</HowTo></div>
       <div style={{ display: "grid", gap: 14 }}>
         {s.questions.map((item, qi) => {
           const isDone = submitted[qi];
@@ -646,6 +666,7 @@ function DecimalBlock({ s, award }) {
   return (
     <Card>
       {s.prompt && <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}><RichText content={s.prompt} /></p>}
+      <div><HowTo>Với mỗi phân số, bấm đoán “Hữu hạn” hay “Vô hạn tuần hoàn”. Máy sẽ khai triển và chỉ ra chu kì cho em.</HowTo></div>
       <div style={{ display: "grid", gap: 12 }}>
         {s.items.map((it, i) => {
           const info = decimalInfo(it.n, it.d);
@@ -805,6 +826,7 @@ function AnglesBlock({ s, award }) {
       <div style={{ background: C.paper, border: "2px solid " + C.ink, borderRadius: 16, padding: 8 }}>
         <svg viewBox="0 0 360 240" style={{ width: "100%", display: "block" }}>{svg}</svg>
       </div>
+      <div style={{ marginTop: 12 }}><HowTo icon="drag">{m === "triangle" ? "Kéo hai thanh trượt bên dưới để đổi góc B và góc C — hình và số đo sẽ đổi theo." : m === "transversal" ? "Bấm nút để chọn loại cặp góc, rồi kéo thanh trượt bên dưới để đổi góc." : "Kéo thanh trượt bên dưới để đổi góc — hình và số đo sẽ đổi theo ngay."}</HowTo></div>
       {m === "transversal" && (
         <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
           {[["dongvi", "Góc đồng vị"], ["soletrong", "Góc so le trong"]].map(([k, t2]) => (
