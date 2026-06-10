@@ -455,13 +455,23 @@ function NumberLineBlock({ s, award }) {
   const an = p.a[0] * (lcd / p.a[1]), bn = p.b[0] * (lcd / p.b[1]);
   const [pick, setPick] = useState(null);
   const correct = av < bv ? "lt" : av > bv ? "gt" : "eq";
+  const sameDenom = p.a[1] === p.b[1];
   return (
     <Card>
-      <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}>Quy về <b>cùng mẫu dương</b> rồi so tử. Trên trục số, số <b>nhỏ hơn</b> nằm <b>bên trái</b>.</p>
+      <p style={{ marginTop: 0, color: C.ink, lineHeight: 1.6 }}>Hai số <b>cùng mẫu</b> thì chỉ cần <b>so tử</b>. Nếu <b>khác mẫu</b>, hãy <b>quy đồng về cùng mẫu dương</b> rồi mới so tử. Trên trục số, số <b>nhỏ hơn</b> nằm <b>bên trái</b>.</p>
+      <div style={{ textAlign: "center", marginBottom: 10 }}>
+        <Pill bg={sameDenom ? C.teal : C.amber}>{sameDenom ? "Cùng mẫu rồi — chỉ cần so tử" : "Khác mẫu — quy đồng về mẫu chung " + lcd}</Pill>
+      </div>
       <div style={{ background: C.paper, borderRadius: 14, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", marginBottom: 12, border: "2px dashed " + C.ink }}>
-        <Frac n={p.a[0]} d={p.a[1]} size={22} color={C.coral} /><span style={{ fontWeight: 800 }}>=</span><Frac n={an} d={lcd} size={20} color={C.coral} />
-        <span style={{ margin: "0 10px", fontWeight: 800, color: C.violet, fontSize: 22 }}>?</span>
-        <Frac n={bn} d={lcd} size={20} color={C.violet} /><span style={{ fontWeight: 800 }}>=</span><Frac n={p.b[0]} d={p.b[1]} size={22} color={C.violet} />
+        {sameDenom ? (<>
+          <Frac n={p.a[0]} d={p.a[1]} size={22} color={C.coral} />
+          <span style={{ margin: "0 10px", fontWeight: 800, color: C.violet, fontSize: 22 }}>?</span>
+          <Frac n={p.b[0]} d={p.b[1]} size={22} color={C.violet} />
+        </>) : (<>
+          <Frac n={p.a[0]} d={p.a[1]} size={22} color={C.coral} /><span style={{ fontWeight: 800 }}>=</span><Frac n={an} d={lcd} size={20} color={C.coral} />
+          <span style={{ margin: "0 10px", fontWeight: 800, color: C.violet, fontSize: 22 }}>?</span>
+          <Frac n={bn} d={lcd} size={20} color={C.violet} /><span style={{ fontWeight: 800 }}>=</span><Frac n={p.b[0]} d={p.b[1]} size={22} color={C.violet} />
+        </>)}
       </div>
       <NumberLine min={s.min} max={s.max} denom={lcd > 8 ? 4 : lcd} value={av} secondary={bv} interactive={false} snap={false} />
       <div style={{ textAlign: "center", marginTop: 8 }}><HowTo>Nhìn trục số rồi bấm chọn một trong ba nút so sánh bên dưới.</HowTo></div>
@@ -1057,7 +1067,7 @@ const BAI_1 = {
     { id: "place", num: 6, title: "Đặt số hữu tỉ lên trục số", icon: "move", type: "numberline", mode: "place", min: -2, max: 2,
       targets: [{ n: 3, d: 2 }, { n: -3, d: 2 }, { n: 5, d: 4 }, { n: -5, d: 4 }] },
     { id: "cmp", num: 7, title: "So sánh hai số hữu tỉ", icon: "scale", type: "numberline", mode: "compare", min: -3, max: 3,
-      pairs: [{ a: [3, 5], b: [4, 5] }, { a: [7, 10], b: [6, 5] }, { a: [-5, 2], b: [-17, 8] }, { a: [-3, 2], b: [-1, 1] }],
+      pairs: [{ a: [3, 5], b: [4, 5] }, { a: [-5, 4], b: [-1, 4] }, { a: [1, 2], b: [2, 3] }, { a: [-3, 4], b: [-2, 3] }],
       note: ["“Bắc cầu” nghĩa là so sánh nhờ một số trung gian: nếu a < b và b < c thì chắc chắn a < c.", { br: 1 }, "Ví dụ 0,7 < 1 và 1 < ", { frac: [6, 5] }, " (vì ", { frac: [6, 5] }, " = 1,2), nên suy ra 0,7 < ", { frac: [6, 5] }, "."] },
     { id: "reallife", num: 8, title: "Số hữu tỉ quanh ta", icon: "globe", type: "reallife",
     cards: [
@@ -1106,11 +1116,11 @@ const BAI_2 = {
       body: ["Viết các số về phân số ", { hl: "cùng mẫu dương", color: C.amber }, " (quy đồng) rồi cộng (trừ) các tử, giữ nguyên mẫu.", { br: 1 }, { br: 1 }, "Vài từ hơi “sang chảnh” nhưng ý rất đơn giản:", { br: 1 }, "• ", { b: "Giao hoán" }, " = đổi chỗ thoải mái: a + b = b + a (giống 2 + 3 = 3 + 2).", { br: 1 }, "• ", { b: "Kết hợp" }, " = nhóm lại tuỳ ý: (a + b) + c = a + (b + c).", { br: 1 }, "• ", { b: "a + (−a) = 0" }, ": một số cộng với số đối của nó luôn bằng 0 (ví dụ 5 + (−5) = 0)."] },
 
     { id: "addsteps", num: 3, title: "Tính hợp lí một tổng", icon: "book", type: "reveal",
-      prompt: ["Tính ", { frac: [2, -3] }, " + 2,5 + ", { frac: [1, 3] }, " + 1½ một cách hợp lí. Bấm từng bước:"],
+      prompt: ["Bấm từng ví dụ để xem cách nhóm số hạng cho dễ tính. Mỗi ví dụ là một tình huống khác nhau:"],
       cards: [
-        { label: "B1", detail: ["Viết về phân số cùng mẫu dương: ", { frac: [-2, 3] }, " + ", { frac: [5, 2] }, " + ", { frac: [1, 3] }, " + ", { frac: [3, 2] }] },
-        { label: "B2", detail: ["Nhóm các phân số cùng mẫu (giao hoán & kết hợp): ( ", { frac: [-2, 3] }, " + ", { frac: [1, 3] }, " ) + ( ", { frac: [5, 2] }, " + ", { frac: [3, 2] }, " )"] },
-        { label: "B3", detail: ["= ", { frac: [-1, 3] }, " + 4 = ", { frac: [11, 3], color: C.teal }, ". Mẹo: gom các phân số cùng mẫu lại trước cho dễ tính!"] },
+        { label: "Ví dụ 1", detail: ["Tính ", { frac: [-2, 3] }, " + 2,5 + ", { frac: [1, 3] }, " + 1½.", { br: 1 }, { step: 1 }, "Đưa tất cả về phân số: ", { frac: [-2, 3] }, " + ", { frac: [5, 2] }, " + ", { frac: [1, 3] }, " + ", { frac: [3, 2] }, ".", { br: 1 }, { step: 2 }, "Nhóm các phân số cùng mẫu: ( ", { frac: [-2, 3] }, " + ", { frac: [1, 3] }, " ) + ( ", { frac: [5, 2] }, " + ", { frac: [3, 2] }, " ).", { br: 1 }, { step: 3 }, "= ", { frac: [-1, 3] }, " + 4 = ", { frac: [11, 3], color: C.teal }, " ≈ 3,67.", { br: 1 }, { b: "Góc nhìn:" }, " gom các phân số cùng mẫu để cộng cho gọn."] },
+        { label: "Ví dụ 2", detail: ["Tính ", { frac: [3, 7] }, " + (−2,5) + ", { frac: [4, 7] }, " + 2,5.", { br: 1 }, { step: 1 }, "Đổi chỗ cho các số “bạn bè” đứng cạnh nhau: ( ", { frac: [3, 7] }, " + ", { frac: [4, 7] }, " ) + ( −2,5 + 2,5 ).", { br: 1 }, { step: 2 }, "Cặp số đối triệt tiêu: −2,5 + 2,5 = 0; còn ", { frac: [3, 7] }, " + ", { frac: [4, 7] }, " = ", { frac: [7, 7] }, " = 1.", { br: 1 }, { step: 3 }, "= 1 + 0 = ", { hl: "1", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " tìm cặp số đối (a và −a) để khử nhau, tính nhanh hơn."] },
+        { label: "Ví dụ 3", detail: ["Tính ", { frac: [1, 6] }, " + (−0,5) + ", { frac: [5, 6] }, " + (−1,5).", { br: 1 }, { step: 1 }, "Nhóm phân số cùng mẫu, nhóm số thập phân: ( ", { frac: [1, 6] }, " + ", { frac: [5, 6] }, " ) + ( −0,5 + (−1,5) ).", { br: 1 }, { step: 2 }, { frac: [1, 6] }, " + ", { frac: [5, 6] }, " = 1; còn −0,5 + (−1,5) = −2.", { br: 1 }, { step: 3 }, "= 1 + (−2) = ", { hl: "−1", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " kết quả có thể âm — cộng hai số âm thì cộng phần số rồi giữ dấu “−”."] },
       ] },
 
     { id: "bracket", num: 4, title: "Quy tắc dấu ngoặc", icon: "book", type: "text", variant: "note", title2: "GHI NHỚ",
@@ -1129,11 +1139,11 @@ const BAI_2 = {
       body: ["Viết các số về phân số rồi ", { hl: "nhân tử với tử, mẫu với mẫu", color: C.amber }, ".", { br: 1 }, { br: 1 }, "• ", { b: "Nghịch đảo" }, " của một phân số là ", { hl: "lật ngược nó lại", color: C.amber }, ": nghịch đảo của ", { frac: [2, 3] }, " là ", { frac: [3, 2] }, ". ", { b: "Chia" }, " một số = ", { b: "nhân" }, " với nghịch đảo của số đó.", { br: 1 }, "• ", { b: "Phân phối" }, " là mẹo gom thừa số chung: a·c + b·c = (a + b)·c (ví dụ 7·2 + 3·2 = (7 + 3)·2 = 20)."] },
 
     { id: "distribute", num: 7, title: "Dùng tính chất phân phối để tính nhanh", icon: "book", type: "reveal",
-      prompt: ["Tính nhanh ", { frac: [7, 6] }, " · 3¼ + ", { frac: [7, 6] }, " · (−0,25). Bấm từng bước:"],
+      prompt: ["Bấm từng ví dụ để thấy cách đặt thừa số chung giúp tính nhanh, qua ba tình huống khác nhau:"],
       cards: [
-        { label: "B1", detail: ["Phát hiện thừa số chung ", { frac: [7, 6] }, ": ", { frac: [7, 6] }, " · ( 3¼ + (−0,25) )"] },
-        { label: "B2", detail: ["Tính trong ngoặc: 3,25 + (−0,25) = 3"] },
-        { label: "B3", detail: ["= ", { frac: [7, 6] }, " · 3 = ", { frac: [21, 6] }, " = ", { frac: [7, 2], color: C.teal }, " = 3,5. Đặt thừa số chung giúp tính nhanh hơn nhiều!"] },
+        { label: "Ví dụ 1", detail: ["Tính nhanh ", { frac: [7, 6] }, " · 3¼ + ", { frac: [7, 6] }, " · (−0,25).", { br: 1 }, { step: 1 }, "Hai số hạng có chung thừa số ", { frac: [7, 6] }, ": ", { frac: [7, 6] }, " · ( 3¼ + (−0,25) ).", { br: 1 }, { step: 2 }, "Trong ngoặc: 3,25 + (−0,25) = 3.", { br: 1 }, { step: 3 }, "= ", { frac: [7, 6] }, " · 3 = ", { frac: [21, 6] }, " = ", { frac: [7, 2], color: C.teal }, " = 3,5.", { br: 1 }, { b: "Góc nhìn:" }, " gộp hai tích về một phép nhân duy nhất."] },
+        { label: "Ví dụ 2", detail: ["Tính nhanh ", { frac: [-3, 5] }, " · 12 + ", { frac: [-3, 5] }, " · (−2).", { br: 1 }, { step: 1 }, "Đặt thừa số chung ", { frac: [-3, 5] }, ": ", { frac: [-3, 5] }, " · ( 12 + (−2) ).", { br: 1 }, { step: 2 }, "Trong ngoặc: 12 + (−2) = 10.", { br: 1 }, { step: 3 }, "= ", { frac: [-3, 5] }, " · 10 = ", { frac: [-30, 5] }, " = ", { hl: "−6", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " thừa số chung có thể âm; dấu “−” theo suốt phép tính."] },
+        { label: "Ví dụ 3", detail: ["Tính nhanh 0,4 · ", { frac: [5, 9] }, " + 0,4 · ", { frac: [13, 9] }, ".", { br: 1 }, { step: 1 }, "Đặt thừa số chung 0,4: 0,4 · ( ", { frac: [5, 9] }, " + ", { frac: [13, 9] }, " ).", { br: 1 }, { step: 2 }, "Trong ngoặc: ", { frac: [5, 9] }, " + ", { frac: [13, 9] }, " = ", { frac: [18, 9] }, " = 2.", { br: 1 }, { step: 3 }, "= 0,4 · 2 = ", { hl: "0,8", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " thừa số chung có thể là số thập phân; gộp phân số cùng mẫu cho ngoặc tròn trịa."] },
       ] },
 
     { id: "mulpractice", num: 8, title: "Luyện nhân, chia", icon: "hash", type: "fillin",
@@ -1260,11 +1270,11 @@ const BAI_4 = {
       body: ["Biểu thức không có ngoặc: thực hiện theo thứ tự ", { hl: "Luỹ thừa → Nhân, chia → Cộng, trừ", color: C.violet }, ". Biểu thức có ngoặc: làm trong ngoặc trước, theo thứ tự ( ) → [ ] → { }."] },
 
     { id: "ordersteps", num: 3, title: "Tính theo đúng thứ tự", icon: "book", type: "reveal",
-      prompt: "Tính 1,2 − 3² + 7,5 : 3. Bấm từng bước:",
+      prompt: "Bấm từng ví dụ để luyện thứ tự phép tính, qua ba kiểu biểu thức khác nhau:",
       cards: [
-        { label: "B1", detail: ["Làm luỹ thừa và phép chia trước: 3² = 9 và 7,5 : 3 = 2,5"] },
-        { label: "B2", detail: ["Thay vào: 1,2 − 9 + 2,5"] },
-        { label: "B3", detail: ["Cộng trừ lần lượt từ trái sang phải:", { br: 1 }, "1,2 − 9 = −7,8 (lấy 9 − 1,2 = 7,8 rồi thêm dấu âm).", { br: 1 }, "−7,8 + 2,5 = ", { hl: "−5,3", color: C.teal }, " (vì 7,8 − 2,5 = 5,3, giữ dấu âm)."] },
+        { label: "Ví dụ 1", detail: ["Tính 1,2 − 3² + 7,5 : 3.", { br: 1 }, { step: 1 }, "Luỹ thừa và chia trước: 3² = 9; 7,5 : 3 = 2,5.", { br: 1 }, { step: 2 }, "Thay vào: 1,2 − 9 + 2,5.", { br: 1 }, { step: 3 }, "Cộng trừ từ trái sang phải: 1,2 − 9 = −7,8; rồi −7,8 + 2,5 = ", { hl: "−5,3", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " không ngoặc thì luỹ thừa → nhân/chia → cộng/trừ."] },
+        { label: "Ví dụ 2", detail: ["Tính 9,8 + 1,5 · 6 + (6,8 − 2) : 3.", { br: 1 }, { step: 1 }, "Làm trong ngoặc trước: 6,8 − 2 = 4,8.", { br: 1 }, { step: 2 }, "Nhân, chia: 1,5 · 6 = 9; 4,8 : 3 = 1,6.", { br: 1 }, { step: 3 }, "Cộng lần lượt: 9,8 + 9 + 1,6 = ", { hl: "20,4", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " có ngoặc thì xử ngoặc đầu tiên, dù nó nằm ở cuối biểu thức."] },
+        { label: "Ví dụ 3", detail: ["Tính 12,4 · 6,25 + (−12,4) · (−2,5)².", { br: 1 }, { step: 1 }, "Luỹ thừa trước: (−2,5)² = 6,25.", { br: 1 }, { step: 2 }, "Hai số hạng đều nhân 6,25: ( 12,4 + (−12,4) ) · 6,25.", { br: 1 }, { step: 3 }, "= 0 · 6,25 = ", { hl: "0", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " để ý luỹ thừa của số âm, và mẹo gộp thừa số chung để ra 0."] },
       ] },
 
     { id: "orderpractice", num: 4, title: "Luyện thứ tự phép tính", icon: "hash", type: "fillin",
@@ -1278,11 +1288,11 @@ const BAI_4 = {
       body: ["“Đẳng thức” là hai vế nối nhau bởi dấu “=”, giống một ", { hl: "cái cân thăng bằng", color: C.amber }, ". Muốn để x đứng một mình, ta chuyển các số khác sang vế kia — nhưng khi chuyển phải ", { hl: "đổi dấu", color: C.amber }, " số đó (“+” thành “−”, “−” thành “+”).", { br: 1 }, { br: 1 }, "Ví dụ: x + 3 = 10 → chuyển 3 sang phải, đổi dấu: x = 10 − 3 = 7.", { br: 1 }, "Hay x − 4 = 6 → chuyển 4 sang phải, đổi dấu: x = 6 + 4 = 10.", { br: 1 }, { br: 1 }, "Công thức chung: nếu a + b = c thì a = c − b; nếu a − b = c thì a = c + b."] },
 
     { id: "movesteps", num: 6, title: "Tìm x bằng chuyển vế", icon: "book", type: "reveal",
-      prompt: ["Tìm x biết x + ", { frac: [1, 2] }, " = ", { frac: [-6, 7] }, ". Bấm từng bước:"],
+      prompt: ["Bấm từng ví dụ để luyện tìm x bằng chuyển vế, qua ba dạng khác nhau:"],
       cards: [
-        { label: "B1", detail: ["Chuyển ", { frac: [1, 2] }, " sang vế phải, đổi dấu: x = ", { frac: [-6, 7] }, " − ", { frac: [1, 2] }] },
-        { label: "B2", detail: ["Quy đồng mẫu 14: = ", { frac: [-12, 14] }, " − ", { frac: [7, 14] }] },
-        { label: "B3", detail: ["= ", { frac: [-19, 14], color: C.teal }] },
+        { label: "Ví dụ 1", detail: ["Tìm x biết x + ", { frac: [1, 2] }, " = ", { frac: [-6, 7] }, ".", { br: 1 }, { step: 1 }, "Chuyển ", { frac: [1, 2] }, " sang vế phải, đổi dấu: x = ", { frac: [-6, 7] }, " − ", { frac: [1, 2] }, ".", { br: 1 }, { step: 2 }, "Quy đồng mẫu 14: x = ", { frac: [-12, 14] }, " − ", { frac: [7, 14] }, ".", { br: 1 }, { step: 3 }, "x = ", { frac: [-19, 14], color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " số hạng đang “+” khi chuyển vế thành “−”."] },
+        { label: "Ví dụ 2", detail: ["Tìm x biết x − ", { frac: [3, 4] }, " = ", { frac: [9, 8] }, ".", { br: 1 }, { step: 1 }, "Chuyển −", { frac: [3, 4] }, " sang vế phải, đổi dấu thành “+”: x = ", { frac: [9, 8] }, " + ", { frac: [3, 4] }, ".", { br: 1 }, { step: 2 }, "Quy đồng mẫu 8: x = ", { frac: [9, 8] }, " + ", { frac: [6, 8] }, ".", { br: 1 }, { step: 3 }, "x = ", { frac: [15, 8], color: C.teal }, " = 1,875.", { br: 1 }, { b: "Góc nhìn:" }, " số hạng đang “−” khi chuyển vế thành “+”."] },
+        { label: "Ví dụ 3", detail: ["Tìm x biết 2x + ", { frac: [1, 2] }, " = ", { frac: [7, 9] }, ".", { br: 1 }, { step: 1 }, "Chuyển ", { frac: [1, 2] }, " sang phải, đổi dấu: 2x = ", { frac: [7, 9] }, " − ", { frac: [1, 2] }, ".", { br: 1 }, { step: 2 }, "Quy đồng mẫu 18: 2x = ", { frac: [14, 18] }, " − ", { frac: [9, 18] }, " = ", { frac: [5, 18] }, ".", { br: 1 }, { step: 3 }, "Chia hai vế cho 2: x = ", { frac: [5, 36], color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " khi x có hệ số, chuyển vế xong còn một bước chia nữa."] },
       ] },
 
     { id: "movepractice", num: 7, title: "Luyện tìm x", icon: "hash", type: "fillin",
@@ -1327,8 +1337,8 @@ const BAI_5 = {
     intro: "Có những phép chia không bao giờ dừng. Nhận biết số thập phân hữu hạn, vô hạn tuần hoàn và cách làm tròn theo độ chính xác." },
   stations: [
     { id: "hook", num: 0, title: "Phép chia nào dừng, phép chia nào không?", icon: "activity", type: "decimal",
-      prompt: ["Bạn Tròn chia ", { frac: [4, 5] }, " được 0,8 rồi dừng. Bạn Vuông chia ", { frac: [5, 18] }, " mãi không ra. Em đoán thử mỗi số là loại nào, rồi để máy khai triển:"],
-      items: [{ n: 4, d: 5 }, { n: 5, d: 18 }] },
+      prompt: ["Bạn Tròn chia ", { frac: [4, 5] }, " được 0,8 rồi dừng. Bạn Vuông chia ", { frac: [5, 18] }, " mãi không ra. Còn ", { frac: [2, 3] }, " thì sao? Em đoán mỗi số là loại nào, rồi để máy khai triển:"],
+      items: [{ n: 4, d: 5 }, { n: 5, d: 18 }, { n: 2, d: 3 }] },
 
     { id: "why", num: 1, title: "Tại sao có số lẻ kéo dài vô tận?", icon: "why", type: "why",
       question: "Tại sao có phép chia như 10 : 3 mãi không bao giờ hết, cứ 3,333… kéo dài vô tận?",
@@ -1415,11 +1425,11 @@ const BAI_6 = {
       body: ["Dấu ", { hl: "√", color: C.amber }, " gọi là “căn bậc hai”. Hỏi ", { hl: "√a", color: C.amber }, " tức là hỏi: ", { b: "số nào (không âm) nhân với chính nó thì ra a?" }, { br: 1 }, { br: 1 }, "Ví dụ √9 = 3 vì 3 · 3 = 9; √25 = 5 vì 5 · 5 = 25.", { br: 1 }, "Nói gọn: √a là số x ≥ 0 sao cho x² = a (x² nghĩa là x · x).", { br: 1 }, { br: 1 }, "Vì cạnh hình vuông luôn dương, cạnh của hình vuông diện tích 2 dm² đúng bằng √2 dm."] },
 
     { id: "exact", num: 4, title: "Tính căn cho kết quả đúng", icon: "book", type: "reveal",
-      prompt: "Bấm để xem vì sao mỗi căn dưới đây ra số chính xác:",
+      prompt: "Bấm từng ví dụ — căn cho kết quả đúng với cả số nguyên, số thập phân và phân số:",
       cards: [
-        { label: "√100", detail: ["10² = 100 và 10 > 0 nên √100 = ", { hl: "10", color: C.teal }] },
-        { label: "√(191²)", detail: ["191 > 0 nên √(191²) = ", { hl: "191", color: C.teal }] },
-        { label: "√(21,5²)", detail: ["21,5 > 0 nên √(21,5²) = ", { hl: "21,5", color: C.teal }] },
+        { label: "√169", detail: ["Tìm số không âm nhân với chính nó ra 169: 13² = 169 và 13 > 0 nên √169 = ", { hl: "13", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " số nguyên chính phương cho căn là số nguyên."] },
+        { label: "√0,49", detail: ["0,7² = 0,49 và 0,7 > 0 nên √0,49 = ", { hl: "0,7", color: C.teal }, ".", { br: 1 }, { b: "Góc nhìn:" }, " số thập phân cũng có thể là “chính phương” và cho căn đúng."] },
+        { label: ["√", { frac: [9, 16] }], detail: ["Căn của một phân số = căn tử chia căn mẫu: √", { frac: [9, 16] }, " = ", { frac: [3, 4], color: C.teal }, " (vì √9 = 3 và √16 = 4).", { br: 1 }, { b: "Góc nhìn:" }, " khai căn từng phần tử/mẫu khi cả hai đều chính phương."] },
       ] },
 
     { id: "practice", num: 5, title: "Luyện căn của số chính phương", icon: "hash", type: "fillin",
