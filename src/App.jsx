@@ -1242,7 +1242,7 @@ const BAI_4 = {
       cards: [
         { label: "B1", detail: ["Làm luỹ thừa và phép chia trước: 3² = 9 và 7,5 : 3 = 2,5"] },
         { label: "B2", detail: ["Thay vào: 1,2 − 9 + 2,5"] },
-        { label: "B3", detail: ["Cộng trừ từ trái sang phải: = −7,8 + 2,5 = ", { hl: "−5,3", color: C.teal }] },
+        { label: "B3", detail: ["Cộng trừ lần lượt từ trái sang phải:", { br: 1 }, "1,2 − 9 = −7,8 (lấy 9 − 1,2 = 7,8 rồi thêm dấu âm).", { br: 1 }, "−7,8 + 2,5 = ", { hl: "−5,3", color: C.teal }, " (vì 7,8 − 2,5 = 5,3, giữ dấu âm)."] },
       ] },
 
     { id: "orderpractice", num: 4, title: "Luyện thứ tự phép tính", icon: "hash", type: "fillin",
@@ -1253,7 +1253,7 @@ const BAI_4 = {
       ] },
 
     { id: "moverule", num: 5, title: "Quy tắc chuyển vế", icon: "move", type: "text", variant: "definition", title2: "QUY TẮC",
-      body: ["Khi chuyển một số hạng từ vế này sang vế kia của một đẳng thức, ta phải ", { hl: "đổi dấu", color: C.amber }, " số hạng đó: “+” thành “−” và “−” thành “+”. Nếu a + b = c thì a = c − b; nếu a − b = c thì a = c + b."] },
+      body: ["“Đẳng thức” là hai vế nối nhau bởi dấu “=”, giống một ", { hl: "cái cân thăng bằng", color: C.amber }, ". Muốn để x đứng một mình, ta chuyển các số khác sang vế kia — nhưng khi chuyển phải ", { hl: "đổi dấu", color: C.amber }, " số đó (“+” thành “−”, “−” thành “+”).", { br: 1 }, { br: 1 }, "Ví dụ: x + 3 = 10 → chuyển 3 sang phải, đổi dấu: x = 10 − 3 = 7.", { br: 1 }, "Hay x − 4 = 6 → chuyển 4 sang phải, đổi dấu: x = 6 + 4 = 10.", { br: 1 }, { br: 1 }, "Công thức chung: nếu a + b = c thì a = c − b; nếu a − b = c thì a = c + b."] },
 
     { id: "movesteps", num: 6, title: "Tìm x bằng chuyển vế", icon: "book", type: "reveal",
       prompt: ["Tìm x biết x + ", { frac: [1, 2] }, " = ", { frac: [-6, 7] }, ". Bấm từng bước:"],
@@ -1324,7 +1324,7 @@ const BAI_5 = {
       body: ["Mọi số hữu tỉ đều viết được dưới dạng số thập phân ", { hl: "hữu hạn", color: C.violet }, " hoặc ", { hl: "vô hạn tuần hoàn", color: C.violet }, ". Không có số hữu tỉ nào cho thập phân vô hạn mà KHÔNG tuần hoàn."] },
 
     { id: "roundrule", num: 5, title: "Làm tròn theo độ chính xác", icon: "book", type: "text", variant: "definition", title2: "QUY TẮC",
-      body: ["Khi làm tròn một số đến một hàng nào đó, kết quả có ", { hl: "độ chính xác bằng một nửa đơn vị của hàng đó", color: C.amber }, ". Cách làm: nhìn chữ số ngay sau hàng làm tròn — nếu ≥ 5 thì tăng thêm 1, nếu < 5 thì giữ nguyên."] },
+      body: ["Nhắc lại tên các hàng sau dấu phẩy: 3,", { b: "1" }, "4", { b: "1" }, "… — chữ số đầu là ", { hl: "hàng phần mười", color: C.amber }, ", chữ số thứ hai là ", { hl: "hàng phần trăm", color: C.amber }, ".", { br: 1 }, { br: 1 }, "Cách làm tròn (chỉ 2 bước):", { br: 1 }, { step: 1 }, "Nhìn chữ số ", { b: "ngay sau" }, " hàng cần làm tròn.", { br: 1 }, { step: 2 }, "Nếu nó ", { hl: "≥ 5 thì tăng thêm 1", color: C.amber }, ", nếu ", { hl: "< 5 thì giữ nguyên", color: C.amber }, "; rồi bỏ hết phần phía sau.", { br: 1 }, { br: 1 }, "Ví dụ làm tròn 3,14159 đến hàng phần trăm: chữ số sau hàng phần trăm là 1 (< 5) → giữ nguyên → 3,14."] },
 
     { id: "table", num: 6, title: "Bảng độ chính xác", icon: "book", type: "reveal",
       prompt: "Bấm từng hàng để xem độ chính xác tương ứng:",
@@ -1476,7 +1476,7 @@ const BAI_7 = {
       ] },
 
     { id: "abs", num: 5, title: "Giá trị tuyệt đối", icon: "hash", type: "text", variant: "definition", title2: "ĐỊNH NGHĨA",
-      body: ["Giá trị tuyệt đối của số thực a, kí hiệu ", { hl: "|a|", color: C.amber }, ", là khoảng cách từ điểm a đến gốc O trên trục số. Vì thế: |a| = a nếu a > 0; |a| = −a nếu a < 0; |0| = 0. Giá trị tuyệt đối luôn ≥ 0."] },
+      body: ["Giá trị tuyệt đối của a, kí hiệu ", { hl: "|a|", color: C.amber }, ", là ", { b: "khoảng cách từ a đến số 0" }, " trên trục số. Khoảng cách thì không bao giờ âm, nên ", { hl: "|a| luôn ≥ 0", color: C.amber }, ".", { br: 1 }, { br: 1 }, "Mẹo dễ nhớ: ", { b: "cứ bỏ dấu âm đi" }, ". Ví dụ |−7| = 7 ; |7| = 7 ; |0| = 0.", { br: 1 }, { br: 1 }, "Viết bằng công thức: |a| = a nếu a ≥ 0; |a| = −a nếu a < 0 (khi a âm thì −a chính là phần dương của nó, ví dụ a = −7 thì −a = 7)."] },
 
     { id: "abspractice", num: 6, title: "Luyện giá trị tuyệt đối", icon: "hash", type: "fillin",
       questions: [
@@ -1523,7 +1523,7 @@ const BAI_8 = {
       answer: ["Vài góc ", { b: "xuất hiện khắp nơi" }, " nên được đặt tên để gọi cho nhanh:", { br: 1 }, "• Góc vuông 90° — góc của tường, cửa, mặt bàn.", { br: 1 }, "• Góc bẹt 180° — duỗi thẳng thành một đường thẳng.", { br: 1 }, { br: 1 }, "Còn ", { hl: "tia phân giác" }, " là tia chia một góc thành hai phần bằng nhau — rất hay dùng khi cần chia đều hay tạo đối xứng."],
       takeaway: ["Đặt tên cho góc đặc biệt giúp ta ", { b: "mô tả và dựng hình nhanh, chính xác" }, " trong xây dựng và thiết kế."] },
     { id: "kebu", num: 2, title: "Hai góc kề bù", icon: "book", type: "text", variant: "definition", title2: "KHÁI NIỆM",
-      body: ["Hai góc ", { hl: "kề bù", color: C.amber }, " là hai góc có một cạnh chung, hai cạnh còn lại là hai tia đối nhau. Tính chất: hai góc kề bù có ", { hl: "tổng số đo bằng 180°", color: C.amber }, "."],
+      body: ["“", { b: "Hai tia đối nhau" }, "” là hai tia chung gốc và nằm thẳng hàng, duỗi về hai phía ngược nhau (ghép lại thành một đường thẳng).", { br: 1 }, { br: 1 }, "Hai góc ", { hl: "kề bù", color: C.amber }, " là hai góc có một cạnh chung, hai cạnh còn lại là hai tia đối nhau — tức chúng nằm sát nhau và “trải” hết một nửa vòng. Vì thế hai góc kề bù có ", { hl: "tổng số đo bằng 180°", color: C.amber }, "."],
       figure: { kind: "kebu", a: 65, caption: "Hai góc kề bù: 65° + 115° = 180°" } },
 
     { id: "doidinh", num: 3, title: "Hai góc đối đỉnh", icon: "book", type: "text", variant: "definition", title2: "KHÁI NIỆM",
@@ -1667,7 +1667,7 @@ const BAI_10 = {
       figure: { kind: "euclid", caption: "Qua M chỉ kẻ được một đường thẳng song song với a" } },
 
     { id: "property", num: 3, title: "Tính chất hai đường thẳng song song", icon: "book", type: "text", variant: "definition", title2: "TÍNH CHẤT",
-      body: ["Nếu một đường thẳng cắt hai đường thẳng ", { hl: "song song", color: C.amber }, " thì: hai góc so le trong bằng nhau; hai góc đồng vị bằng nhau (và hai góc trong cùng phía bù nhau)."],
+      body: ["Nếu một đường thẳng cắt hai đường thẳng ", { hl: "song song", color: C.amber }, " thì: hai góc so le trong bằng nhau; hai góc đồng vị bằng nhau (và hai góc trong cùng phía bù nhau).", { br: 1 }, { br: 1 }, { b: "Để ý chiều ngược với Bài 9:" }, " ở Bài 9 ta thấy ", { hl: "góc bằng nhau ⟹ kết luận song song", color: C.violet }, " (dấu hiệu). Ở đây ta đã biết ", { hl: "song song rồi ⟹ suy ra góc bằng nhau", color: C.violet }, " (tính chất). Cùng một hình, nhưng dùng theo hai chiều khác nhau."],
       figure: { kind: "parallel", a: 55, mark: "soletrong", caption: "a // b: hai góc so le trong bằng nhau" } },
 
     { id: "hequa", num: 4, title: "Vài hệ quả thường dùng", icon: "book", type: "reveal",
@@ -1815,7 +1815,7 @@ const BAI_12 = {
           figure: { kind: "triangle", b: 90, c: 60, labelA: "?", labelB: "90°", labelC: "60°", ans: "30°" } },
         { ask: "Tam giác có hai góc 90° và 55°. Số đo góc còn lại (độ)?", answer: 35, hint: "180° − 90° − 55° = 35°.",
           figure: { kind: "triangle", b: 90, c: 55, labelA: "?", labelB: "90°", labelC: "55°", ans: "35°" } },
-        { ask: "Tam giác có một góc ngoài bằng 110°, một góc trong không kề bằng 50°. Góc trong không kề còn lại (độ)?", answer: 60, hint: "Góc ngoài = tổng hai góc trong không kề: 110° − 50° = 60°." },
+        { ask: "Tam giác có một góc ngoài bằng 110°, một góc trong không kề bằng 50°. Góc trong không kề còn lại (độ)?", answer: 60, hint: ["“", { b: "Góc ngoài" }, "” tại một đỉnh là góc kề bù với góc trong ở đỉnh đó (nằm phía ngoài tam giác). Tính chất: góc ngoài = tổng hai góc trong KHÔNG kề với nó.", { br: 1 }, "Vậy góc trong còn lại = 110° − 50° = 60°."] },
       ] },
 
     { id: "reallife", num: 5, title: "Tam giác 180° quanh ta", icon: "globe", type: "reallife",
