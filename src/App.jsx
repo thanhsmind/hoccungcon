@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Activity, Check, X, ArrowRight, Star, Sparkles, Target, Scale, Hash,
-  MoveHorizontal, Trophy, Lightbulb, ChevronDown, RefreshCw, BookOpen, Plus, Globe, HelpCircle,
+  Check, X, ArrowRight, Star, Sparkles, Target,
+  Trophy, Lightbulb, ChevronDown, BookOpen, Globe, HelpCircle,
   Hand, MousePointerClick, Keyboard, List
 } from "lucide-react";
+import { C } from "./lib/colors.js";
+import { gcd, decToFrac, nearestFrac, parseNum, decimalInfo } from "./lib/num.js";
+import { RAD, P, arc } from "./lib/geometry.js";
+import { ICON } from "./lib/icons.js";
+import { inputBox, btnPrimary, btnGhost } from "./lib/styles.js";
 
 /* ════════════════════════════════════════════════════════════════
    HƯỚNG DẪN SOẠN BÀI (AUTHORING GUIDE)
@@ -48,60 +53,7 @@ import {
      "Bình thường" | {b:"in đậm"} | {hl:"tô màu"} | {frac:[3,2]} | {sup:"2"}
    ════════════════════════════════════════════════════════════════ */
 
-const C = {
-  ink: "#16243F", paper: "#FBF6EC", coral: "#FF6A5C", teal: "#1FAE97",
-  amber: "#FFB22E", violet: "#7C83FF",
-};
-
-/* ───────── tiện ích số ───────── */
-const gcd = (a, b) => (b ? gcd(b, a % b) : Math.abs(a));
-function simplify(n, d) { if (d < 0) { n = -n; d = -d; } const g = gcd(n, d) || 1; return [n / g, d / g]; }
-function decToFrac(x) {
-  const neg = x < 0; const s = Math.abs(x).toString();
-  if (!s.includes(".")) return simplify(neg ? -Math.abs(x) : Math.abs(x), 1);
-  const dec = s.split(".")[1].length, den = Math.pow(10, dec);
-  const num = Math.round(Math.abs(x) * den);
-  return simplify(neg ? -num : num, den);
-}
-// tìm phân số đúng (mẫu nhỏ nhất) ứng với một giá trị — tránh lỗi số thực lặp vô hạn
-function nearestFrac(x, maxD = 36) {
-  for (let d = 1; d <= maxD; d++) {
-    const n = Math.round(x * d);
-    if (Math.abs(x - n / d) < 1e-6) return simplify(n, d);
-  }
-  return decToFrac(x);
-}
-function parseNum(str) {
-  if (str == null) return NaN;
-  let s = String(str).trim().replace(/\s/g, "").replace(",", ".");
-  if (s.includes("/")) { const [a, b] = s.split("/"); return parseFloat(a) / parseFloat(b); }
-  return parseFloat(s);
-}
-/* chia dài để phát hiện: hữu hạn hay vô hạn tuần hoàn + chu kì */
-function decimalInfo(n, d) {
-  const sign = (n < 0) !== (d < 0) ? "−" : "";
-  n = Math.abs(n); d = Math.abs(d);
-  const intPart = Math.floor(n / d);
-  let rem = n % d;
-  const digits = [], seen = new Map();
-  let periodStart = -1;
-  while (rem !== 0) {
-    if (seen.has(rem)) { periodStart = seen.get(rem); break; }
-    seen.set(rem, digits.length);
-    rem *= 10; digits.push(Math.floor(rem / d)); rem %= d;
-  }
-  if (rem === 0) return { sign, intPart, nonRepeat: digits.join(""), period: "" };
-  return { sign, intPart, nonRepeat: digits.slice(0, periodStart).join(""), period: digits.slice(periodStart).join("") };
-}
-/* SVG: điểm cực + cung tròn (góc tính bằng độ, trục y hướng xuống nên dùng −sin) */
-const RAD = Math.PI / 180;
-function P(cx, cy, r, deg) { return { x: cx + r * Math.cos(deg * RAD), y: cy - r * Math.sin(deg * RAD) }; }
-function arc(cx, cy, r, a0, a1) {
-  let span = (((a1 - a0) % 360) + 360) % 360;
-  const large = span > 180 ? 1 : 0;
-  const p0 = P(cx, cy, r, a0), p1 = P(cx, cy, r, a1);
-  return `M ${p0.x.toFixed(1)} ${p0.y.toFixed(1)} A ${r} ${r} 0 ${large} 0 ${p1.x.toFixed(1)} ${p1.y.toFixed(1)}`;
-}
+/* C (màu), tiện ích số và hình học đã tách sang src/lib/ — xem import ở đầu file. */
 
 /* ───────── hiển thị phân số ───────── */
 function Frac({ n, d, size = 22, color = "currentColor" }) {
@@ -249,10 +201,7 @@ function HowTo({ children, icon = "click" }) {
     </div>
   );
 }
-const inputBox = { display: "block", width: "100%", marginTop: 6, padding: "10px 12px", border: "2.5px solid " + C.ink, borderRadius: 12, fontSize: 18, fontWeight: 700, fontFamily: "'Be Vietnam Pro'", color: C.ink, boxSizing: "border-box" };
-const btnPrimary = { background: C.coral, color: "#fff", border: "2.5px solid " + C.ink, borderRadius: 14, padding: "11px 20px", fontWeight: 800, fontSize: 16, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: "'Be Vietnam Pro'", boxShadow: "3px 3px 0 " + C.ink };
-const btnGhost = { background: "#fff", color: C.ink, border: "2.5px solid " + C.ink, borderRadius: 14, padding: "10px 16px", fontWeight: 700, fontSize: 15, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "'Be Vietnam Pro'" };
-const ICON = { activity: Activity, hash: Hash, mirror: RefreshCw, move: MoveHorizontal, scale: Scale, trophy: Trophy, plus: Plus, book: BookOpen, globe: Globe, why: HelpCircle };
+/* inputBox, btnPrimary, btnGhost (style) và ICON đã tách sang src/lib/ — xem import ở đầu file. */
 
 function StationShell({ s, children }) {
   const Icon = ICON[s.icon] || Sparkles;

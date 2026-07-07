@@ -1,0 +1,90 @@
+{
+  "id": "modularize-app-2",
+  "feature": "modularize-app",
+  "title": "Phase B: extract lib/ (colors, num, geometry, icons, styles) from App.jsx",
+  "lane": "standard",
+  "status": "capped",
+  "deps": [
+    "modularize-app-1"
+  ],
+  "decisions": [
+    "D4"
+  ],
+  "files": [
+    "src/lib/colors.js",
+    "src/lib/num.js",
+    "src/lib/geometry.js",
+    "src/lib/icons.js",
+    "src/lib/styles.js",
+    "src/App.jsx"
+  ],
+  "read_first": [
+    "src/App.jsx",
+    "docs/history/modularize-app/approach.md",
+    "docs/history/modularize-app/plan.md"
+  ],
+  "action": "Extract the pure foundation layer out of src/App.jsx into src/lib/ (per D4), a move-only refactor. Create: (a) src/lib/colors.js exporting `C` (App.jsx:51-54); (b) src/lib/num.js exporting gcd, simplify, decToFrac, nearestFrac, parseNum, decimalInfo (App.jsx:57-95) — keep their internal cross-calls intact; (c) src/lib/geometry.js exporting RAD, P, arc (App.jsx:97-104); (d) src/lib/icons.js exporting the `ICON` map (App.jsx:255) with its own `import { Activity, Hash, RefreshCw, MoveHorizontal, Scale, Trophy, Plus, BookOpen, Globe, HelpCircle } from 'lucide-react'`; (e) src/lib/styles.js exporting inputBox, btnPrimary, btnGhost (App.jsx:252-254) with `import { C } from './colors.js'`. Then in src/App.jsx: DELETE those inline definitions and add imports at the top (`import { C } from './lib/colors.js'`, `import { gcd, simplify, decToFrac, nearestFrac, parseNum, decimalInfo } from './lib/num.js'`, `import { RAD, P, arc } from './lib/geometry.js'`, `import { ICON } from './lib/icons.js'`, `import { inputBox, btnPrimary, btnGhost } from './lib/styles.js'`). Every existing reference in App.jsx keeps its identical name, so all call sites keep working. Keep the App.jsx lucide-react import line for the icons still used directly there (Sparkles, Check, X, ArrowRight, Star, Target, Lightbulb, ChevronDown, Hand, MousePointerClick, Keyboard, List, etc.) — only remove a name from App.jsx's lucide import if it is now unused in App.jsx AND you have confirmed so by grep. Do NOT change any behavior, any lesson content (D2), or static/ (D1). Do NOT move UI components/blocks/data (that is Phases C-F). The smoke test and build are the regression gate.",
+  "must_haves": {
+    "truths": [
+      "src/lib/ contains colors.js, num.js, geometry.js, icons.js, styles.js each exporting the named symbols",
+      "src/App.jsx imports those symbols instead of defining them inline; no duplicate inline definitions remain",
+      "npx vitest run stays green (all 15 lessons, >=100 stations) and npm run build stays clean",
+      "no import cycle (lib modules import only lucide-react and each other downward: styles->colors)"
+    ],
+    "artifacts": [
+      {
+        "path": "src/lib/colors.js",
+        "substantive": "exports C color-token object"
+      },
+      {
+        "path": "src/lib/num.js",
+        "substantive": "exports the 6 number helpers with internal cross-calls intact"
+      },
+      {
+        "path": "src/lib/geometry.js",
+        "substantive": "exports RAD, P, arc"
+      },
+      {
+        "path": "src/lib/icons.js",
+        "substantive": "exports ICON map, imports its own lucide icons"
+      },
+      {
+        "path": "src/lib/styles.js",
+        "substantive": "exports inputBox, btnPrimary, btnGhost; imports C from ./colors.js"
+      }
+    ],
+    "key_links": [
+      "src/App.jsx imports every extracted symbol from src/lib/*",
+      "src/lib/styles.js imports C from src/lib/colors.js"
+    ],
+    "prohibitions": [
+      "Do NOT change observable behavior or output",
+      "Do NOT alter lesson content (D2) or touch static/ (D1)",
+      "Do NOT move UI components, blocks, Figure, or lesson data (Phases C-F)",
+      "Do NOT modify src/__tests__/lessons.smoke.test.jsx"
+    ]
+  },
+  "verify": "npx vitest run && npm run build",
+  "trace": {
+    "worker": "solo",
+    "outcome": null,
+    "files_changed": [
+      "src/lib/colors.js",
+      "src/lib/num.js",
+      "src/lib/geometry.js",
+      "src/lib/icons.js",
+      "src/lib/styles.js",
+      "src/App.jsx"
+    ],
+    "deviations": [],
+    "friction": null,
+    "capped_at": "2026-07-07T17:41:07.028Z",
+    "behavior_change": false,
+    "verification_evidence": null,
+    "verify_output": "npx vitest run: 1 passed (all 15 lessons, stations net green). npm run build: 1505 modules transformed (5 new src/lib files), built in 1.64s, bundle 296.26 kB gzip 93.51 (== baseline -> behavior preserved). No inline C/num/geometry/styles/ICON defs remain in App.jsx; imported from src/lib/*.",
+    "verify_passed": true,
+    "claimed_at": "2026-07-07T17:38:09.020Z",
+    "verify_command": "npx vitest run && npm run build",
+    "verified_at": "2026-07-07T17:41:01.871Z"
+  }
+}
