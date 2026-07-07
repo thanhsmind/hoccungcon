@@ -1,0 +1,83 @@
+{
+  "id": "modularize-app-1",
+  "feature": "modularize-app",
+  "title": "Phase A: add Vitest+jsdom smoke net rendering all 15 lessons on the current monolith",
+  "lane": "standard",
+  "status": "capped",
+  "deps": [],
+  "decisions": [
+    "D3",
+    "D4"
+  ],
+  "files": [
+    "package.json",
+    "package-lock.json",
+    "vite.config.js",
+    "src/test/setup.js",
+    "src/__tests__/lessons.smoke.test.jsx"
+  ],
+  "read_first": [
+    "src/App.jsx",
+    "package.json",
+    "vite.config.js",
+    "docs/history/modularize-app/CONTEXT.md",
+    "docs/history/modularize-app/plan.md",
+    "docs/history/modularize-app/approach.md",
+    ".spikes/modularize-app/smoke.test.jsx"
+  ],
+  "action": "Establish the regression safety net BEFORE any code is moved (per D3). Steps: (1) Add Vitest + jsdom + @testing-library/react + @testing-library/dom as devDependencies (vitest ^2 — pin the major so npx does not fetch v3) and an npm 'test' script running `vitest run`. After editing package.json, run `npm install` to materialize the devDeps and update package-lock.json (a cold clone has no node_modules). (2) Configure the jsdom test env in vite.config.js under a `test` block: `import { defineConfig } from \"vite\"` (proven to work with a `test` block), set environment 'jsdom', globals true, setupFiles ['src/test/setup.js'], and include ['src/**/*.test.jsx'] so the disposable .spikes/ test is NOT collected. (3) In src/test/setup.js provide the jsdom stubs the app requires (PROVEN necessary by the .spikes/modularize-app spike): `window.scrollTo` no-op, a global `ResizeObserver` class stub (App.jsx:167 NumberLine), and a `window.matchMedia` stub. (4) Write src/__tests__/lessons.smoke.test.jsx that imports App from '../App.jsx', renders <App/> once, collects lesson-nav buttons (textContent matches /Bài\\s*\\d+/, de-duped), asserts there are >=15, then clicks through EVERY lesson button. This is a STRONG net (not a vacuous one): after each click, count rendered stations via container.querySelectorAll('section[id]') and assert each lesson renders >=3 stations AND the total across all 15 lessons is >=100 (spike measured 150). This makes a dropped lesson or station in Phases D/E fail the test. Wrap clicks so no act(...) warning is emitted (fireEvent inside act, or React's act). Do NOT modify src/App.jsx at all — the spike proved nav-driven rendering needs no LESSONS export. Do NOT move, rename, or restructure any code (Phases B-F). The smoke test MUST pass against the current unmodified monolith and `npm run build` MUST stay clean.",
+  "must_haves": {
+    "truths": [
+      "npx vitest run renders all 15 lessons green against the current (un-split) App.jsx",
+      "the net is strong: each lesson renders >=3 stations and total stations across 15 lessons >=100 (so a dropped lesson/station in later phases fails)",
+      "vitest include excludes .spikes so only src tests run",
+      "npm run build stays clean"
+    ],
+    "artifacts": [
+      {
+        "path": "src/__tests__/lessons.smoke.test.jsx",
+        "substantive": "renders <App/>, clicks all >=15 lesson nav buttons, asserts no throw + content present; no TODO stubs, no skipped tests"
+      },
+      {
+        "path": "src/test/setup.js",
+        "substantive": "stubs window.scrollTo, global ResizeObserver, window.matchMedia for jsdom (proven required by spike)"
+      },
+      {
+        "path": "package.json",
+        "substantive": "adds vitest ^2, jsdom, @testing-library/react, @testing-library/dom devDeps and a `test` script"
+      }
+    ],
+    "key_links": [
+      "vite.config.js test block sets environment jsdom + setupFiles src/test/setup.js",
+      "the smoke test imports the real App from src/App.jsx"
+    ],
+    "prohibitions": [
+      "Do NOT modify src/App.jsx in any way (no LESSONS export needed — spike proved nav-driven render works)",
+      "Do NOT move, rename, extract, or restructure any component/util/data (Phases B-F only)",
+      "Do NOT change any lesson content (D2)",
+      "Do NOT touch static/ (D1)"
+    ]
+  },
+  "verify": "npx vitest run && npm run build",
+  "trace": {
+    "worker": "solo",
+    "outcome": null,
+    "files_changed": [
+      "package.json",
+      "package-lock.json",
+      "vite.config.js",
+      "src/test/setup.js",
+      "src/__tests__/lessons.smoke.test.jsx"
+    ],
+    "deviations": [],
+    "friction": null,
+    "capped_at": "2026-07-07T17:32:03.185Z",
+    "behavior_change": false,
+    "verification_evidence": null,
+    "verify_output": "npx vitest run: Test Files 1 passed (1); Tests 1 passed (1) in 732ms, no act warnings. npm run build: 1500 modules transformed, built in 1.67s, bundle dist/assets/index-p-d6Q-tE.js 296.26 kB (byte-identical hash to pre-change baseline -> App.jsx untouched, behavior preserved).",
+    "verify_passed": true,
+    "claimed_at": "2026-07-07T17:30:26.755Z",
+    "verify_command": "npx vitest run && npm run build",
+    "verified_at": "2026-07-07T17:31:59.538Z"
+  }
+}
