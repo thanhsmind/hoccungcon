@@ -1,6 +1,6 @@
 {
   "enabledPlugins": {
-    "compound-engineering@compound-engineering-plugin": false
+    "compound-engineering@compound-engineering-plugin": true
   },
   "permissions": {
     "defaultMode": "bypassPermissions"
