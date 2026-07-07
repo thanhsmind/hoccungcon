@@ -1,0 +1,103 @@
+{
+  "id": "modularize-app-4",
+  "feature": "modularize-app",
+  "title": "Phase D: extract Figure + 10 block renderers + renderBlock to src/components/(blocks/)",
+  "lane": "standard",
+  "status": "capped",
+  "deps": [
+    "modularize-app-3"
+  ],
+  "decisions": [
+    "D4"
+  ],
+  "files": [
+    "src/components/Figure.jsx",
+    "src/components/blocks/TextBlock.jsx",
+    "src/components/blocks/CalculatorBlock.jsx",
+    "src/components/blocks/RevealBlock.jsx",
+    "src/components/blocks/WhyBlock.jsx",
+    "src/components/blocks/RealLifeBlock.jsx",
+    "src/components/blocks/NumberLineBlock.jsx",
+    "src/components/blocks/FillInBlock.jsx",
+    "src/components/blocks/QuizBlock.jsx",
+    "src/components/blocks/DecimalBlock.jsx",
+    "src/components/blocks/AnglesBlock.jsx",
+    "src/components/blocks/renderBlock.jsx",
+    "src/App.jsx"
+  ],
+  "read_first": [
+    "src/App.jsx",
+    "src/lib/colors.js",
+    "src/lib/num.js",
+    "src/lib/geometry.js",
+    "src/lib/styles.js",
+    "src/components/RichText.jsx",
+    "docs/history/modularize-app/approach.md"
+  ],
+  "action": "Move-only extraction of the block renderers and Figure out of src/App.jsx into src/components/ (per D4). Steps: (1) Create src/components/Figure.jsx exporting `Figure` AND its private helper `triLayout` (defined just above Figure, used only inside Figure at the geometry case). Add the imports Figure references (grep its body): geometry { P, arc, RAD } from '../lib/geometry.js' as used, { C } from '../lib/colors.js', any lucide icons, React hooks if used. (2) Create one file per block under src/components/blocks/ (TextBlock, CalculatorBlock, RevealBlock, WhyBlock, RealLifeBlock, NumberLineBlock, FillInBlock, QuizBlock, DecimalBlock, AnglesBlock), each exporting its component with the EXACT current body. For EACH block, add only the imports it actually references — resolve them by reading the block body and by the editor's unused/undefined diagnostics. Likely deps per block, import as referenced: React hooks { useState, useEffect } from 'react'; { C } from '../../lib/colors.js'; number helpers { parseNum, decToFrac, decimalInfo, gcd } from '../../lib/num.js'; geometry { P, arc, RAD } from '../../lib/geometry.js'; styles { inputBox, btnPrimary, btnGhost } from '../../lib/styles.js'; { Frac } from '../Frac.jsx'; { RichText, richToText } from '../RichText.jsx'; { NumberLine } from '../NumberLine.jsx'; { Card } from '../ui/Card.jsx'; { Pill } from '../ui/Pill.jsx'; { HowTo } from '../ui/HowTo.jsx'; { Figure } from '../Figure.jsx'; and named lucide icons the block uses. `award` is a PROP passed in, never imported. (3) Create src/components/blocks/renderBlock.jsx exporting `renderBlock(s, award)` — the exact switch statement — importing all 10 block components. (4) In src/App.jsx: DELETE the definitions of triLayout, Figure, all 10 blocks, and renderBlock; add `import { renderBlock } from './components/blocks/renderBlock.jsx'` (App.jsx calls renderBlock only, not the blocks directly). Then trim App.jsx's now-unused imports (react hooks, lucide names, lib helpers, Frac/RichText/etc.) that were used ONLY by the moved code — verify each removal against diagnostics/grep; keep every name App.jsx's remaining shell code still uses. Do NOT change behavior, lesson content (D2), or static/ (D1). Do NOT move lesson data BAI_* (Phase E). The smoke net + build are the regression gate.",
+  "must_haves": {
+    "truths": [
+      "src/components/Figure.jsx exports Figure (with triLayout co-located)",
+      "src/components/blocks/ has one file per block (10) each exporting its component, plus renderBlock.jsx exporting renderBlock",
+      "src/App.jsx imports renderBlock and no longer defines any block/Figure/renderBlock; no duplicate definitions remain",
+      "npx vitest run stays green (all 15 lessons, >=100 stations, all 10 block types render) and npm run build stays clean",
+      "imports acyclic: blocks import lib/*, shared components, Figure, lucide; renderBlock imports blocks; no block imports App.jsx"
+    ],
+    "artifacts": [
+      {
+        "path": "src/components/Figure.jsx",
+        "substantive": "exports Figure + triLayout; imports geometry/colors/lucide as used"
+      },
+      {
+        "path": "src/components/blocks/renderBlock.jsx",
+        "substantive": "exports renderBlock(s, award) switch importing all 10 blocks; no TODO"
+      },
+      {
+        "path": "src/components/blocks/QuizBlock.jsx",
+        "substantive": "exports QuizBlock with exact body and resolved imports (uses Figure, RichText, styles)"
+      }
+    ],
+    "key_links": [
+      "App.jsx imports renderBlock from ./components/blocks/renderBlock.jsx",
+      "renderBlock.jsx imports all 10 block components",
+      "blocks that render figures import Figure from ../Figure.jsx"
+    ],
+    "prohibitions": [
+      "Do NOT change observable behavior or output",
+      "Do NOT alter lesson content (D2) or touch static/ (D1)",
+      "Do NOT move lesson data BAI_1..15 (Phase E) or slim the App shell (Phase F)",
+      "Do NOT modify src/__tests__/lessons.smoke.test.jsx",
+      "award must remain a prop, never an import"
+    ]
+  },
+  "verify": "npx vitest run && npm run build",
+  "trace": {
+    "worker": "solo",
+    "outcome": null,
+    "files_changed": [
+      "src/components/Figure.jsx",
+      "src/components/blocks/TextBlock.jsx",
+      "src/components/blocks/CalculatorBlock.jsx",
+      "src/components/blocks/RevealBlock.jsx",
+      "src/components/blocks/WhyBlock.jsx",
+      "src/components/blocks/RealLifeBlock.jsx",
+      "src/components/blocks/NumberLineBlock.jsx",
+      "src/components/blocks/FillInBlock.jsx",
+      "src/components/blocks/QuizBlock.jsx",
+      "src/components/blocks/DecimalBlock.jsx",
+      "src/components/blocks/AnglesBlock.jsx",
+      "src/components/blocks/renderBlock.jsx",
+      "src/App.jsx"
+    ],
+    "deviations": [],
+    "friction": null,
+    "capped_at": "2026-07-07T18:00:14.824Z",
+    "behavior_change": false,
+    "verification_evidence": null,
+    "verify_output": "vitest: 1 passed (15 lessons, all 10 block types render). build: clean, bundle 296.25 kB == baseline. App.jsx 2232->1259 lines; Figure+10 blocks+renderBlock extracted to src/components/(blocks/); App imports only renderBlock. Dead imports (Frac,RichText,NumberLine,Card,HowTo,num,geometry) trimmed by orchestrator after worker. award stays a prop; no block imports App.jsx.",
+    "verify_passed": true,
+    "claimed_at": "2026-07-07T17:50:37.871Z",
+    "verify_command": "npx vitest run && npm run build",
+    "verified_at": "2026-07-07T18:00:09.655Z"
+  }
+}

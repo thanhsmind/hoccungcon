@@ -10,13 +10,13 @@
     "review": false
   },
   "workers": [],
-  "summary": "Phases A+B capped, verified, committed (branch modularize-app). src/lib/ extracted (colors,num,geometry,icons,styles); net green, bundle == baseline. Next slice: Phase C (extract shared components: Frac, RichText, NumberLine, ui/{Card,Pill,HowTo,StationShell}).",
-  "next_action": "For Phase C: prepare next-slice cell modularize-app-3, validate, Gate 3, execute. Or pause.",
+  "summary": "Phases A+B+C capped, verified, committed (branch modularize-app, latest 6a00f57). src/lib/ + src/components/(ui/) extracted; net green, bundle == baseline. Next slice: Phase D (extract Figure + block renderers + renderBlock to src/components/blocks/).",
+  "next_action": "For Phase D: prepare cell modularize-app-4, validate, Gate 3, execute. User pacing: stop at each Gate 3.",
   "cells": {
-    "open": 1,
-    "claimed": 0,
-    "capped": 2,
+    "open": 0,
+    "claimed": 1,
+    "capped": 3,
     "blocked": 0
   },
-  "last_activity": "2026-07-07T17:43:28.266Z"
+  "last_activity": "2026-07-07T17:58:39.758Z"
 }
