@@ -1,0 +1,89 @@
+{
+  "id": "modularize-app-3",
+  "feature": "modularize-app",
+  "title": "Phase C: extract shared components (Frac, RichText, NumberLine, ui/Card,Pill,HowTo,StationShell)",
+  "lane": "standard",
+  "status": "capped",
+  "deps": [
+    "modularize-app-2"
+  ],
+  "decisions": [
+    "D4"
+  ],
+  "files": [
+    "src/components/Frac.jsx",
+    "src/components/RichText.jsx",
+    "src/components/NumberLine.jsx",
+    "src/components/ui/Card.jsx",
+    "src/components/ui/Pill.jsx",
+    "src/components/ui/HowTo.jsx",
+    "src/components/ui/StationShell.jsx",
+    "src/App.jsx"
+  ],
+  "read_first": [
+    "src/App.jsx",
+    "src/lib/colors.js",
+    "src/lib/num.js",
+    "src/lib/icons.js",
+    "docs/history/modularize-app/approach.md"
+  ],
+  "action": "Move-only extraction of the shared presentational components out of src/App.jsx into src/components/ (per D4). Create each file with the EXACT current body, adding the imports each needs: (a) src/components/Frac.jsx -> `Frac` (needs React implicitly via JSX; no lib deps beyond none — Frac uses no C); (b) src/components/RichText.jsx -> `RichText` AND `richToText` (both currently defined together); imports { C } from '../lib/colors.js' and { Frac } from './Frac.jsx'; (c) src/components/NumberLine.jsx -> `NumberLine`; imports React hooks { useState, useRef, useEffect, useCallback } from 'react', { C } from '../lib/colors.js', { nearestFrac } from '../lib/num.js', { Frac } from './Frac.jsx'; (d) src/components/ui/Card.jsx -> `Card` (import C from '../../lib/colors.js'); (e) src/components/ui/Pill.jsx -> `Pill` (import C); (f) src/components/ui/HowTo.jsx -> `HowTo` (import C and { Hand, Keyboard, MousePointerClick } from 'lucide-react'); (g) src/components/ui/StationShell.jsx -> `StationShell` (import C, { ICON } from '../../lib/icons.js', { Sparkles } from 'lucide-react'). Then in src/App.jsx: DELETE those inline definitions (Frac, RichText+richToText, NumberLine, Card, Pill, HowTo, StationShell) and add imports at the top (Frac from './components/Frac.jsx', { RichText, richToText } from './components/RichText.jsx', NumberLine from './components/NumberLine.jsx', Card/Pill/HowTo/StationShell from './components/ui/*.jsx'). After editing, remove from App.jsx's lucide-react import ONLY the names that become unused there (verify by grep: Hand, Keyboard, MousePointerClick move into HowTo; Sparkles is still used elsewhere in App.jsx so keep it if grep shows other uses). Do NOT change behavior, lesson content (D2), or static/ (D1). Do NOT move blocks/Figure/data (Phases D-F). Verify with the smoke net + build.",
+  "must_haves": {
+    "truths": [
+      "src/components/ holds Frac.jsx, RichText.jsx, NumberLine.jsx and ui/{Card,Pill,HowTo,StationShell}.jsx each exporting the named component(s)",
+      "richToText is exported from RichText.jsx and imported by App.jsx",
+      "src/App.jsx imports these instead of defining them; no duplicate inline definitions remain",
+      "npx vitest run stays green (all 15 lessons, >=100 stations) and npm run build stays clean",
+      "imports stay acyclic: components import only lib/*, lucide, and each other downward (RichText/NumberLine -> Frac)"
+    ],
+    "artifacts": [
+      {
+        "path": "src/components/RichText.jsx",
+        "substantive": "exports RichText + richToText; imports C and Frac"
+      },
+      {
+        "path": "src/components/NumberLine.jsx",
+        "substantive": "exports NumberLine; imports hooks, C, nearestFrac, Frac"
+      },
+      {
+        "path": "src/components/ui/StationShell.jsx",
+        "substantive": "exports StationShell; imports C, ICON, Sparkles"
+      }
+    ],
+    "key_links": [
+      "App.jsx imports every extracted component from src/components/*",
+      "RichText.jsx and NumberLine.jsx import Frac from ./Frac.jsx"
+    ],
+    "prohibitions": [
+      "Do NOT change observable behavior or output",
+      "Do NOT alter lesson content (D2) or touch static/ (D1)",
+      "Do NOT move block renderers, Figure, renderBlock, or lesson data (Phases D-F)",
+      "Do NOT modify src/__tests__/lessons.smoke.test.jsx"
+    ]
+  },
+  "verify": "npx vitest run && npm run build",
+  "trace": {
+    "worker": "solo",
+    "outcome": null,
+    "files_changed": [
+      "src/components/Frac.jsx",
+      "src/components/RichText.jsx",
+      "src/components/NumberLine.jsx",
+      "src/components/ui/Card.jsx",
+      "src/components/ui/Pill.jsx",
+      "src/components/ui/HowTo.jsx",
+      "src/components/ui/StationShell.jsx",
+      "src/App.jsx"
+    ],
+    "deviations": [],
+    "friction": null,
+    "capped_at": "2026-07-07T17:47:47.403Z",
+    "behavior_change": false,
+    "verification_evidence": null,
+    "verify_output": "vitest: 1 passed (15 lessons net). build: clean, bundle 296.26 kB gzip 93.52 == baseline -> behavior preserved. 7 shared components extracted to src/components/(ui/); App.jsx imports them, unused react/lucide/num/icons imports trimmed.",
+    "verify_passed": true,
+    "claimed_at": "2026-07-07T17:43:55.910Z",
+    "verify_command": "npx vitest run && npm run build",
+    "verified_at": "2026-07-07T17:47:39.851Z"
+  }
+}
