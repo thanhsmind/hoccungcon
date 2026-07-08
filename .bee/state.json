@@ -10,13 +10,13 @@
     "review": false
   },
   "workers": [],
-  "summary": "Phases A+B+C capped, verified, committed (branch modularize-app, latest 6a00f57). src/lib/ + src/components/(ui/) extracted; net green, bundle == baseline. Next slice: Phase D (extract Figure + block renderers + renderBlock to src/components/blocks/).",
-  "next_action": "For Phase D: prepare cell modularize-app-4, validate, Gate 3, execute. User pacing: stop at each Gate 3.",
+  "summary": "Phases A-D capped, verified, committed (branch modularize-app, latest e44c342). lib/ + components/(ui,blocks)/ + Figure extracted; App.jsx down to 1259 lines; net green, bundle == baseline. Next slice: Phase E (extract lesson data BAI_1..15 to src/data/lessons/, keeping import { C }, no content change per D2).",
+  "next_action": "For Phase E: prepare cell modularize-app-5, validate, Gate 3, execute. User pacing: stop at each Gate 3.",
   "cells": {
-    "open": 0,
-    "claimed": 1,
-    "capped": 3,
+    "open": 1,
+    "claimed": 0,
+    "capped": 4,
     "blocked": 0
   },
-  "last_activity": "2026-07-07T17:58:39.758Z"
+  "last_activity": "2026-07-08T00:00:00.000Z"
 }
