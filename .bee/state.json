@@ -18,7 +18,7 @@
     "capped": 5,
     "blocked": 0
   },
-  "last_activity": "2026-07-08T04:35:00.000Z",
+  "last_activity": "2026-07-08T04:43:44.882Z",
   "uat": {
     "status": "skipped",
     "reason": "User accepted automated evidence (npx vitest run: all 15 lessons render via real <App/> path; npm run build clean, bundle==baseline). Move-only refactor, byte-faithful, behavior_change=false on all cells.",
