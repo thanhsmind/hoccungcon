@@ -1,0 +1,101 @@
+{
+  "id": "modularize-app-5",
+  "feature": "modularize-app",
+  "title": "Phase E: extract lesson data BAI_1..15 to src/data/lessons/ (keep import C, no content change)",
+  "lane": "standard",
+  "status": "capped",
+  "deps": [
+    "modularize-app-4"
+  ],
+  "decisions": [
+    "D2",
+    "D4"
+  ],
+  "files": [
+    "src/data/lessons/bai-01.js",
+    "src/data/lessons/bai-02.js",
+    "src/data/lessons/bai-03.js",
+    "src/data/lessons/bai-04.js",
+    "src/data/lessons/bai-05.js",
+    "src/data/lessons/bai-06.js",
+    "src/data/lessons/bai-07.js",
+    "src/data/lessons/bai-08.js",
+    "src/data/lessons/bai-09.js",
+    "src/data/lessons/bai-10.js",
+    "src/data/lessons/bai-11.js",
+    "src/data/lessons/bai-12.js",
+    "src/data/lessons/bai-13.js",
+    "src/data/lessons/bai-14.js",
+    "src/data/lessons/bai-15.js",
+    "src/data/lessons/index.js",
+    "src/App.jsx"
+  ],
+  "read_first": [
+    "src/App.jsx",
+    "src/lib/colors.js",
+    "docs/history/modularize-app/approach.md"
+  ],
+  "action": "Move-only extraction of the 15 lesson data objects out of src/App.jsx into src/data/lessons/ (per D2 and D4). The lesson data (BAI_1..15, lines ~64-1128) references ONLY the color token object `C` — nothing else. Steps: (1) For each n in 1..15, create src/data/lessons/bai-0n.js (zero-padded: bai-01.js..bai-15.js) with `import { C } from \"../../lib/colors.js\";` then `export const BAI_n = { ... };` — copy the object body BYTE-FOR-BYTE from App.jsx, changing NOT ONE character of content (per D2). (2) Create src/data/lessons/index.js that imports all 15 (`import { BAI_1 } from \"./bai-01.js\";` ... `import { BAI_15 } from \"./bai-15.js\";`) and re-exports `export const LESSONS = [BAI_1, BAI_2, ... , BAI_15];` in the SAME order as the current array (App.jsx line ~1129). (3) In src/App.jsx: DELETE all 15 `const BAI_n = {...}` definitions AND the `const LESSONS = [...]` line; add `import { LESSONS } from \"./data/lessons/index.js\";` near the other imports. App.jsx keeps using `LESSONS` by the same name. After deletion, `C` may become unused in App.jsx shell — remove the `import { C }` line ONLY if grep confirms C no longer appears in App.jsx code (it likely still does in the shell/header). Verify each import removal against diagnostics/grep. Do NOT alter any lesson content, wording, numbers, or token structure (D2). Do NOT touch static/ (D1). Do NOT change the App shell logic (Phase F). The smoke net + build are the regression gate — the net asserts each lesson renders >=3 stations and total >=100, so any dropped/garbled lesson fails it.",
+  "must_haves": {
+    "truths": [
+      "src/data/lessons/ has bai-01.js..bai-15.js each exporting its BAI_n (import { C } only) and index.js exporting LESSONS in original order",
+      "lesson content is byte-identical to before (no wording/number/token change) (D2)",
+      "src/App.jsx imports LESSONS from ./data/lessons/index.js and defines no BAI_* or LESSONS inline",
+      "npx vitest run stays green (all 15 lessons, >=100 stations) and npm run build stays clean"
+    ],
+    "artifacts": [
+      {
+        "path": "src/data/lessons/bai-01.js",
+        "substantive": "exports BAI_1 verbatim; imports C"
+      },
+      {
+        "path": "src/data/lessons/index.js",
+        "substantive": "imports all 15 lessons, exports LESSONS array in original order"
+      }
+    ],
+    "key_links": [
+      "App.jsx imports LESSONS from ./data/lessons/index.js",
+      "each bai-0n.js imports C from ../../lib/colors.js"
+    ],
+    "prohibitions": [
+      "Do NOT change any lesson content — wording, numbers, tokens, order (D2)",
+      "Do NOT touch static/ (D1)",
+      "Do NOT change the App shell/navigation logic (Phase F)",
+      "Do NOT modify src/__tests__/lessons.smoke.test.jsx"
+    ]
+  },
+  "verify": "npx vitest run && npm run build",
+  "trace": {
+    "worker": "solo",
+    "outcome": null,
+    "files_changed": [
+      "src/data/lessons/bai-01.js",
+      "src/data/lessons/bai-02.js",
+      "src/data/lessons/bai-03.js",
+      "src/data/lessons/bai-04.js",
+      "src/data/lessons/bai-05.js",
+      "src/data/lessons/bai-06.js",
+      "src/data/lessons/bai-07.js",
+      "src/data/lessons/bai-08.js",
+      "src/data/lessons/bai-09.js",
+      "src/data/lessons/bai-10.js",
+      "src/data/lessons/bai-11.js",
+      "src/data/lessons/bai-12.js",
+      "src/data/lessons/bai-13.js",
+      "src/data/lessons/bai-14.js",
+      "src/data/lessons/bai-15.js",
+      "src/data/lessons/index.js",
+      "src/App.jsx"
+    ],
+    "deviations": [],
+    "friction": null,
+    "capped_at": "2026-07-08T04:23:33.169Z",
+    "behavior_change": false,
+    "verification_evidence": null,
+    "verify_output": "npx vitest run: 1 passed (all 15 lessons render, stations OK). npm run build: 1540 modules transformed, dist/assets/index-DLX7e2ic.js 296.25 kB gzip 93.46 kB, built clean.",
+    "verify_passed": true,
+    "claimed_at": "2026-07-08T04:21:44.019Z",
+    "verify_command": "npx vitest run && npm run build",
+    "verified_at": "2026-07-08T04:23:28.397Z"
+  }
+}

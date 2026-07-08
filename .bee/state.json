@@ -1,15 +1,27 @@
 {
   "schema_version": "1.0",
-  "phase": "idle",
-  "feature": null,
-  "mode": null,
+  "phase": "reviewing",
+  "feature": "modularize-app",
+  "mode": "standard",
   "approved_gates": {
-    "context": false,
-    "shape": false,
-    "execution": false,
-    "review": false
+    "context": true,
+    "shape": true,
+    "execution": true,
+    "review": true
   },
   "workers": [],
-  "summary": "",
-  "next_action": "Invoke bee-hive."
+  "summary": "modularize-app A-E capped+committed (latest 56af041). Review (Gate 4) done: 3 reviewers, NO P1. 1 P2 + 3 P3 all non-blocking, filed to .bee/backlog.jsonl; report at docs/history/modularize-app/reports/review-gate4.md. Build+smoke green, bundle==baseline, D1/D2/D4 honored, byte-faithful move.",
+  "next_action": "Gate 4 approved. Merge modularize-app -> main, then bee-scribing (spec sync) + bee-compounding.",
+  "cells": {
+    "open": 0,
+    "claimed": 0,
+    "capped": 5,
+    "blocked": 0
+  },
+  "last_activity": "2026-07-08T04:32:00.000Z",
+  "uat": {
+    "status": "skipped",
+    "reason": "User accepted automated evidence (npx vitest run: all 15 lessons render via real <App/> path; npm run build clean, bundle==baseline). Move-only refactor, byte-faithful, behavior_change=false on all cells.",
+    "at": "2026-07-08"
+  }
 }
