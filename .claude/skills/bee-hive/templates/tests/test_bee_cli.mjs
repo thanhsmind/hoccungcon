@@ -469,6 +469,24 @@ await check('cells.schedule on an empty/zero-cell store exits 0 with empty waves
   assert(Array.isArray(parsed.waves) && parsed.waves.length === 0, `expected empty waves, got ${result.stdout}`);
 });
 
+// cells.reopen / cells.unclaim (GitHub #12) run LAST in the demo-1 chain: demo-1
+// is "dropped" by this point (excluded from the schedule assertions above), so
+// reopening it here does not disturb them.
+await check('cells.reopen example runs through the real dispatcher (dropped -> open)', async () => {
+  const result = await assertExampleOk('cells.reopen');
+  const cell = JSON.parse(result.stdout);
+  assert(cell.status === 'open', `demo-1 should be open after reopen, got ${cell.status}`);
+  assert(cell.trace.verify_passed !== true, 'reopen must clear a stale passing verify');
+});
+
+await check('cells.unclaim example runs through the real dispatcher (claimed -> open)', async () => {
+  await assertExampleOk('cells.claim'); // demo-1 is open after reopen; re-claim it
+  const result = await assertExampleOk('cells.unclaim');
+  const cell = JSON.parse(result.stdout);
+  assert(cell.status === 'open', `demo-1 should be open after unclaim, got ${cell.status}`);
+  assert(!cell.trace.worker, 'unclaim must release the worker');
+});
+
 await check('reservations.reserve example runs through the real dispatcher', async () => {
   const result = await assertExampleOk('reservations.reserve');
   assert(JSON.parse(result.stdout).ok === true, 'reserve should succeed on a fresh path');
@@ -1102,7 +1120,7 @@ await check('feedback.rank example runs through the real dispatcher', async () =
 // against a transcript-less window (fake CLAUDE_CONFIG_DIR) and must still exit 0.
 await check('perf.start example writes an open-section marker and exits 0', async () => {
   const result = await assertExampleOk('perf.start');
-  const marker = JSON.parse(fs.readFileSync(path.join(root, '.bee', 'perf-open.json'), 'utf8'));
+  const marker = JSON.parse(fs.readFileSync(path.join(root, '.bee', 'cache', 'perf-open.json'), 'utf8'));
   assert(marker.started_at, 'marker records a start time');
   assert(result.status === 0, 'perf start exits 0');
 });
@@ -1110,7 +1128,7 @@ await check('perf.stop example closes the section, appends to the global log, cl
   const result = await assertExampleOk('perf.stop');
   const rec = JSON.parse(result.stdout);
   assert(rec.schema === 'bee-perf/v1', `section schema tag, got ${result.stdout}`);
-  assert(!fs.existsSync(path.join(root, '.bee', 'perf-open.json')), 'marker cleared after stop');
+  assert(!fs.existsSync(path.join(root, '.bee', 'cache', 'perf-open.json')), 'marker cleared after stop');
   const log = fs.readFileSync(path.join(root, 'perf-global', 'performance.jsonl'), 'utf8').trim();
   assert(log.split('\n').length >= 1, 'section appended to the global log');
 });
@@ -1528,7 +1546,7 @@ await check('a registry content change surfaces manifest_changed on stderr, neve
 
   // Simulate drift by corrupting the persisted hash directly — this cell
   // never edits the real command-registry.mjs (out of its file scope).
-  const hashFile = path.join(root2, '.bee', 'manifest-hash.json');
+  const hashFile = path.join(root2, '.bee', 'cache', 'manifest-hash.json');
   writeJsonAtomic(hashFile, { hash: 'deadbeef', checked_at: new Date().toISOString() });
 
   const drifted = await runBee(['status', '--json']);

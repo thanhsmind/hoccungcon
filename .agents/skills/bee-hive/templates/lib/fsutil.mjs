@@ -25,9 +25,21 @@ export function readJson(file, fallback = null) {
   } catch {
     return fallback;
   }
+  // Strip a leading UTF-8 BOM (U+FEFF) before parsing. Windows tooling adds one
+  // by default — e.g. PowerShell 5.1's `Set-Content -Encoding UTF8` writes a BOM
+  // (it is NOT BOM-less) — and JSON.parse then throws "Unexpected token '﻿'".
+  // Stripping it here fixes every reader (config, state, onboarding, the Windows
+  // install distribution preflight, …) in one place. See GitHub #9.
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   try {
     return JSON.parse(text);
-  } catch {
+  } catch (err) {
+    // Fail open (return the fallback) so a malformed JSON never crashes bee — but
+    // NEVER silently. Swallowing the parse error made a corrupt file look
+    // identical to an absent one, so a broken .bee/config.json was silently
+    // replaced by defaults and the user got misleading behavior with no clue why
+    // (GitHub #13). Warn to STDERR (stdout is reserved for --json output).
+    console.warn(`bee: could not parse JSON at ${file} — ${err.message}. Using fallback; fix the file.`);
     return fallback;
   }
 }
@@ -41,6 +53,17 @@ export function readText(file, fallback = '') {
     return fs.readFileSync(file, 'utf8');
   } catch {
     return fallback;
+  }
+}
+
+// removeFileIfExists — best-effort unlink, never throws. Used to prune a cache
+// file from its legacy `.bee/` root location after it has been re-homed under
+// `.bee/cache/` (GitHub #11), so the old scratch file does not linger.
+export function removeFileIfExists(file) {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    /* best-effort cleanup — a leftover legacy cache file is harmless */
   }
 }
 

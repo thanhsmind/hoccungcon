@@ -207,6 +207,113 @@ function makeCell(id, extra = {}) {
 
 // ─── state ──────────────────────────────────────────────────────────────────
 
+await check('readJson strips a leading UTF-8 BOM (GitHub #9) and warns instead of silently swallowing malformed JSON (GitHub #13)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-readjson-bom-'));
+  // 1. A BOM-prefixed file (what PowerShell `Set-Content -Encoding UTF8` writes)
+  //    must parse cleanly rather than throwing "Unexpected token '﻿'".
+  const bomFile = path.join(dir, 'bom.json');
+  fs.writeFileSync(bomFile, `\uFEFF${JSON.stringify({ a: 1 })}`, 'utf8');
+  const parsed = readJson(bomFile, null);
+  assert(parsed && parsed.a === 1, `BOM-prefixed JSON should parse, got ${JSON.stringify(parsed)}`);
+  // 2. Malformed JSON returns the fallback AND emits a stderr warning naming the
+  //    file — a corrupt config must never be silently indistinguishable from an
+  //    absent one.
+  const badFile = path.join(dir, 'bad.json');
+  fs.writeFileSync(badFile, '{ not valid', 'utf8');
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(' '));
+  try {
+    const fallback = readJson(badFile, { def: true });
+    assert(fallback && fallback.def === true, 'malformed JSON should return the fallback');
+  } finally {
+    console.warn = origWarn;
+  }
+  assert(
+    warnings.some((w) => w.includes('could not parse JSON') && w.includes(badFile)),
+    `expected a warning naming the malformed file, got ${JSON.stringify(warnings)}`,
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+await check('resolveProductRoot: unset->bee root (FREEZE, zero change); set->resolved; set-but-missing->loud warn (GitHub #14)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-productroot-'));
+  fs.mkdirSync(path.join(dir, '.bee'), { recursive: true });
+  const cfg = path.join(dir, '.bee', 'config.json');
+
+  // FREEZE 1: no config file at all -> product root IS the bee root (byte-identical to today).
+  assert(laneStore.resolveProductRoot(dir) === dir, 'no config -> bee root');
+  // FREEZE 2: config present, no product_root key -> still the bee root.
+  writeJsonAtomic(cfg, { hooks: {} });
+  assert(laneStore.resolveProductRoot(dir) === dir, 'config without product_root -> bee root');
+  // FREEZE 3: empty-string product_root is treated as unset.
+  writeJsonAtomic(cfg, { product_root: '' });
+  assert(laneStore.resolveProductRoot(dir) === dir, 'empty product_root -> bee root');
+
+  // SET + exists (relative) -> resolves under the bee root.
+  fs.mkdirSync(path.join(dir, 'repo'), { recursive: true });
+  writeJsonAtomic(cfg, { product_root: 'repo' });
+  assert(laneStore.resolveProductRoot(dir) === path.resolve(dir, 'repo'), 'relative product_root resolves under bee root');
+  // SET + exists (absolute) -> honored as-is.
+  writeJsonAtomic(cfg, { product_root: path.join(dir, 'repo') });
+  assert(laneStore.resolveProductRoot(dir) === path.join(dir, 'repo'), 'absolute product_root honored');
+
+  // SET + missing -> loud stderr warning (not silent) AND returns the resolved missing path.
+  writeJsonAtomic(cfg, { product_root: 'nope' });
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(' '));
+  let missingResolved;
+  try {
+    missingResolved = laneStore.resolveProductRoot(dir);
+  } finally {
+    console.warn = origWarn;
+  }
+  assert(missingResolved === path.resolve(dir, 'nope'), 'set-but-missing returns resolved path (reads find nothing)');
+  assert(
+    warnings.some((w) => w.includes('product_root') && w.includes('#14')),
+    `set-but-missing must warn loudly naming product_root, got ${JSON.stringify(warnings)}`,
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+await check('backlog reads resolve against product_root when set — the repo-divorce topology (GitHub #14)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-productroot-int-'));
+  fs.mkdirSync(path.join(dir, '.bee'), { recursive: true });
+  // Workshop-side docs/ is EMPTY (the bug: reads landed here and found nothing).
+  // The real product docs live one dir down in ./repo.
+  fs.mkdirSync(path.join(dir, 'repo', 'docs'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'repo', 'docs', 'backlog.md'),
+    '# Backlog\n\n| ID | Story | Status |\n|----|-------|--------|\n| 1 | A | done |\n| 2 | B | proposed |\n| 3 | C | in-flight |\n',
+    'utf8',
+  );
+  // Without product_root: workshop docs/backlog.md absent -> null (today's silent behavior).
+  assert(readBacklogCounts(dir) === null, 'no product_root + no workshop backlog -> null (unchanged)');
+  // With product_root=repo: the same call now reads ./repo/docs/backlog.md.
+  writeJsonAtomic(path.join(dir, '.bee', 'config.json'), { product_root: 'repo' });
+  const counts = readBacklogCounts(dir);
+  assert(counts && counts.done === 1 && counts.proposed === 1 && counts.inFlight === 1,
+    `backlog counts should come from ./repo/docs/backlog.md, got ${JSON.stringify(counts)}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+await check('inject cache re-homes to .bee/cache/ and migrates from the legacy .bee/ root file (GitHub #11)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-cache-migrate-'));
+  fs.mkdirSync(path.join(dir, '.bee'), { recursive: true });
+  const legacy = path.join(dir, '.bee', '.inject-cache.json');
+  const fresh = path.join(dir, '.bee', 'cache', 'inject-cache.json');
+  // Seed the legacy-location cache with a prior injection record.
+  fs.writeFileSync(legacy, JSON.stringify({ preamble: { hash: 'h1', at: new Date().toISOString() } }), 'utf8');
+  // shouldInject honors the legacy history via fallback read: same hash -> no re-inject.
+  assert(shouldInject(dir, 'preamble', 'h1') === false, 'legacy dedup history honored via fallback');
+  // markInjected writes to the NEW location and removes the legacy file.
+  markInjected(dir, 'preamble', 'h2');
+  assert(fs.existsSync(fresh), 'inject cache now lives under .bee/cache/');
+  assert(!fs.existsSync(legacy), 'legacy .bee/.inject-cache.json is cleaned up');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 await check('findRepoRoot walks up from a nested dir', async () => {
   const found = findRepoRoot(path.join(root, 'src', 'deep', 'nested'));
   assert(found === root, `expected ${root}, got ${found}`);
@@ -1832,6 +1939,10 @@ const EXPECTED_STATE_EXPORTS = [
   'removeLane',
   'listLanes',
   'resolvePipeline',
+  // GitHub #14: product-doc root resolution (repo-divorce topology).
+  'resolveProductRoot',
+  // GitHub #11: home for derived/scratch cache files (.bee/cache/).
+  'cacheFilePath',
   // fsh-9 (fresh-session-handoff S4, D1): the two-kind handoff lifecycle.
   'HANDOFF_KINDS',
   'handoffPath',
