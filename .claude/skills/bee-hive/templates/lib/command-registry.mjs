@@ -995,7 +995,7 @@ export const COMMAND_REGISTRY = [
     name: 'reviews.candidate.add',
     invoke: 'bee reviews candidate add',
     description:
-      "Append one entry to .bee/review-candidates.jsonl for a closing feature. --mode is required and must be the closing feature's lane.",
+      "Append one entry to .bee/review-candidates.jsonl for a closing feature. --mode is required and must be the closing feature's lane. When --cells is omitted, it auto-fills from the feature's capped cells so review coverage can match the candidate (GitHub #16).",
     parameters: {
       type: 'object',
       properties: {
@@ -1280,6 +1280,53 @@ export const COMMAND_REGISTRY = [
   // ─── config (ao-2ai-1) — loud refusal of malformed/prompt-less/unsafe
   // cli-tier config, where today it silently reverts to the seeded default
   // (normalizeTierValue -> undefined -> normalizeModels never overwrites). ──
+  {
+    name: 'config.get',
+    invoke: 'bee config get',
+    description: 'Read a .bee/config.json value by key (dot-notation for nested keys, e.g. guards.idle_gate). Exits 0 whether or not the key is set.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Config key, dot-notation for nested (e.g. product_root, guards.idle_gate).' },
+        json: { type: 'boolean', description: 'Emit machine-readable JSON instead of a one-line confirmation.' },
+      },
+      required: ['key'],
+    },
+    examples: ['bee config get --key gate_bypass --json'],
+    deprecated: null,
+  },
+  {
+    name: 'config.set',
+    invoke: 'bee config set',
+    description: 'Set a .bee/config.json value by key (dot-notation for nested), validating on write, instead of hand-editing the JSON. The value is parsed as JSON when it parses (true/false/numbers/objects) else kept as a string; --string forces a string. Refuses to write if it would introduce an invalid models/cli-tier config, or if the existing file is unparseable.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Config key, dot-notation for nested (e.g. product_root, guards.idle_gate).' },
+        value: { type: 'string', description: 'The value; parsed as JSON when possible (false -> boolean), else a string.' },
+        string: { type: 'boolean', description: 'Force the value to be stored as a string (skip JSON coercion).' },
+        json: { type: 'boolean', description: 'Emit machine-readable JSON instead of a one-line confirmation.' },
+      },
+      required: ['key', 'value'],
+    },
+    examples: ['bee config set --key gate_bypass --value false --json'],
+    deprecated: null,
+  },
+  {
+    name: 'config.unset',
+    invoke: 'bee config unset',
+    description: 'Remove a .bee/config.json key (dot-notation for nested). A no-op (exit 0) when the key is absent. Refuses if the existing file is unparseable.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Config key to remove, dot-notation for nested.' },
+        json: { type: 'boolean', description: 'Emit machine-readable JSON instead of a one-line confirmation.' },
+      },
+      required: ['key'],
+    },
+    examples: ['bee config unset --key gate_bypass --json'],
+    deprecated: null,
+  },
   {
     name: 'config.validate',
     invoke: 'bee config validate',

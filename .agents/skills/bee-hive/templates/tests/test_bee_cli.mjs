@@ -1083,6 +1083,26 @@ await check('reviews.candidate.add example runs through the real dispatcher (nes
   assert(entry.feature === 'demo3' && entry.mode === 'standard', `expected the example candidate, got ${result.stdout}`);
 });
 
+await check('reviews candidate add auto-fills cells from the feature capped cells when --cells is omitted (GitHub #16)', async () => {
+  const rr = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-cli-cand-cells-'));
+  try {
+    fs.mkdirSync(path.join(rr, '.bee', 'cells'), { recursive: true });
+    writeJsonAtomic(path.join(rr, '.bee', 'onboarding.json'), { schema_version: '1.0', bee_version: '0.1.0' });
+    writeJsonAtomic(path.join(rr, '.bee', 'cells', 'revfeat-1.json'), { id: 'revfeat-1', feature: 'revfeat', title: 't', lane: 'small', action: 'a', status: 'capped' });
+    writeJsonAtomic(path.join(rr, '.bee', 'cells', 'revfeat-2.json'), { id: 'revfeat-2', feature: 'revfeat', title: 't2', lane: 'small', action: 'a', status: 'open' });
+    writeJsonAtomic(path.join(rr, '.bee', 'cells', 'other-1.json'), { id: 'other-1', feature: 'other', title: 't3', lane: 'small', action: 'a', status: 'capped' });
+    const res = await runModuleWorker(BEE_MJS, { args: ['reviews', 'candidate', 'add', '--feature', 'revfeat', '--head', 'abc123', '--mode', 'small', '--json'], cwd: rr });
+    assert(res.status === 0, `candidate add exit ${res.status}: ${res.stderr}`);
+    const entry = JSON.parse(res.stdout);
+    assert(
+      Array.isArray(entry.cells) && entry.cells.length === 1 && entry.cells[0] === 'revfeat-1',
+      `cells should auto-fill to the feature's CAPPED cell only (not open/other-feature), got ${JSON.stringify(entry.cells)}`,
+    );
+  } finally {
+    fs.rmSync(rr, { recursive: true, force: true });
+  }
+});
+
 await check('reviews.candidates example runs through the real dispatcher (flat 2-token verb, distinct from candidate add)', async () => {
   const result = await assertExampleOk('reviews.candidates', { cwd: rootReviewsFeedback });
   const entries = JSON.parse(result.stdout);
@@ -1252,6 +1272,61 @@ await check('config.validate example runs through the real dispatcher: clean con
     assert(codes.includes('cli-malformed'), `expected cli-malformed, got ${JSON.stringify(codes)}`);
   } finally {
     fs.rmSync(cfgTmp, { recursive: true, force: true });
+  }
+});
+
+await check('config set/get/unset examples round-trip through the real dispatcher (GitHub #15)', async () => {
+  const cfgRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-cli-config-getset-'));
+  try {
+    fs.mkdirSync(path.join(cfgRoot, '.bee'), { recursive: true });
+    writeJsonAtomic(path.join(cfgRoot, '.bee', 'onboarding.json'), { schema_version: '1.0', bee_version: '0.1.0' });
+    // set: `--value false` is JSON-coerced to boolean false, not the string "false".
+    const setRes = await assertExampleOk('config.set', { cwd: cfgRoot });
+    assert(JSON.parse(setRes.stdout).value === false, `set should coerce false to boolean, got ${setRes.stdout}`);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cfgRoot, '.bee', 'config.json'), 'utf8'));
+    assert(onDisk.gate_bypass === false, `config.json should carry gate_bypass:false, got ${JSON.stringify(onDisk)}`);
+    // get: reads it back.
+    const got = JSON.parse((await assertExampleOk('config.get', { cwd: cfgRoot })).stdout);
+    assert(got.present === true && got.value === false, `get should read gate_bypass:false, got ${JSON.stringify(got)}`);
+    // unset: removes it.
+    const unset = JSON.parse((await assertExampleOk('config.unset', { cwd: cfgRoot })).stdout);
+    assert(unset.removed === true, `unset should remove the key, got ${JSON.stringify(unset)}`);
+    assert(!('gate_bypass' in JSON.parse(fs.readFileSync(path.join(cfgRoot, '.bee', 'config.json'), 'utf8'))), 'gate_bypass should be gone');
+  } finally {
+    fs.rmSync(cfgRoot, { recursive: true, force: true });
+  }
+});
+
+await check('config set: nested dot-key, string coercion, refuse-on-invalid, no-clobber of a malformed file (GitHub #15)', async () => {
+  const cfgRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-cli-config-edge-'));
+  try {
+    fs.mkdirSync(path.join(cfgRoot, '.bee'), { recursive: true });
+    writeJsonAtomic(path.join(cfgRoot, '.bee', 'onboarding.json'), { schema_version: '1.0', bee_version: '0.1.0' });
+    // nested dot-key -> creates guards.idle_gate = false
+    let r = await runModuleWorker(BEE_MJS, { args: ['config', 'set', '--key', 'guards.idle_gate', '--value', 'false', '--json'], cwd: cfgRoot });
+    assert(r.status === 0, `nested set exit ${r.status}: ${r.stderr}`);
+    let disk = JSON.parse(fs.readFileSync(path.join(cfgRoot, '.bee', 'config.json'), 'utf8'));
+    assert(disk.guards && disk.guards.idle_gate === false, `guards.idle_gate should be false, got ${JSON.stringify(disk)}`);
+    // unset prunes the now-empty parent: no stray "guards": {} left behind
+    r = await runModuleWorker(BEE_MJS, { args: ['config', 'unset', '--key', 'guards.idle_gate', '--json'], cwd: cfgRoot });
+    assert(r.status === 0 && JSON.parse(r.stdout).removed === true, `nested unset exit ${r.status}: ${r.stdout}`);
+    disk = JSON.parse(fs.readFileSync(path.join(cfgRoot, '.bee', 'config.json'), 'utf8'));
+    assert(!('guards' in disk), `unset should prune the empty guards parent, got ${JSON.stringify(disk)}`);
+    // a non-JSON value stays a string
+    r = await runModuleWorker(BEE_MJS, { args: ['config', 'set', '--key', 'product_root', '--value', 'repo', '--json'], cwd: cfgRoot });
+    assert(r.status === 0 && JSON.parse(r.stdout).value === 'repo', `product_root should be string "repo", got ${r.stdout}`);
+    // refuse-on-invalid: an unsafe cli command must be rejected and NOT written
+    r = await runModuleWorker(BEE_MJS, { args: ['config', 'set', '--key', 'models.claude.generation', '--value', '{"kind":"cli","command":"x --yolo"}', '--json'], cwd: cfgRoot });
+    assert(r.status !== 0, `an unsafe cli set should be refused, got exit ${r.status}: ${r.stdout}`);
+    disk = JSON.parse(fs.readFileSync(path.join(cfgRoot, '.bee', 'config.json'), 'utf8'));
+    assert(!(disk.models && disk.models.claude), `the refused set must not have been written, got ${JSON.stringify(disk)}`);
+    // no-clobber: a malformed config file must be left intact, set refused
+    fs.writeFileSync(path.join(cfgRoot, '.bee', 'config.json'), '{ broken', 'utf8');
+    r = await runModuleWorker(BEE_MJS, { args: ['config', 'set', '--key', 'product_root', '--value', 'x', '--json'], cwd: cfgRoot });
+    assert(r.status !== 0, `set on a malformed config must refuse, got exit ${r.status}`);
+    assert(fs.readFileSync(path.join(cfgRoot, '.bee', 'config.json'), 'utf8').includes('broken'), 'the malformed file must be left intact');
+  } finally {
+    fs.rmSync(cfgRoot, { recursive: true, force: true });
   }
 });
 
