@@ -24,11 +24,11 @@ Start with `node .bee/bin/bee.mjs status --json`. If onboarding is missing or st
 ## Required Inputs
 
 - `docs/history/<feature>/CONTEXT.md`
-- `docs/history/<feature>/plan.md` — approved at Gate 2 and enriched to `artifact_readiness: implementation-ready`
+- `docs/history/<feature>/plan.md` — approved and **frozen at Gate 2** (D1): its content sections are immutable once `approved_gates.shape` is set, so what validating reads is byte-identical to what the human approved
 - the discovery and approach content: `docs/history/<feature>/discovery.md` and `approach.md` **if they exist**; otherwise the `## Discovery` and `## Approach` sections folded into `plan.md` (decision 0009 — separate files are written only for L2+ discovery or high-risk lanes)
-- current-work cells: `node .bee/bin/bee.mjs cells list --feature <feature>`
+- current-slice cells exist: `node .bee/bin/bee.mjs cells list --feature <feature>` (D2 — the current slice lives only in cells; there is no separate slice document)
 
-If `plan.md` is absent, unapproved, or its `artifact_readiness` is not `implementation-ready`, stop and return to bee-planning. Never validate an unapproved shape. A missing `discovery.md`/`approach.md` is **not** a failure when `plan.md` carries the equivalent sections — read those instead; stop only if neither the files nor the sections exist and the plan genuinely lacks discovery/approach content.
+If `plan.md` is absent, unapproved, or the current-slice cells do not exist, stop and return to bee-planning. Never validate an unapproved shape. A missing `discovery.md`/`approach.md` is **not** a failure when `plan.md` carries the equivalent sections — read those instead; stop only if neither the files nor the sections exist and the plan genuinely lacks discovery/approach content.
 
 ## Operating Contract
 
@@ -58,13 +58,17 @@ Existing implementation, file/API/type inspection, command output, build/typeche
 
 ## Plan Checker (adversarial)
 
-Dispatch a subagent on the **`review` slot** (decision 0021 — `resolveTier(root, 'review', runtime)`, default opus on Claude, generation fallback; state the model explicitly; if the runtime cannot select per-agent models, cap its reads and output instead) — **in the background where the runtime supports it** (decision 0017): continue the spike/matrix/cell-review work while it runs; its findings block nothing until the Gate 3 presentation, which never happens with the checker still outstanding. It assumes the plan is flawed and verifies 5 dimensions: requirement/decision coverage, cell completeness, dependency correctness, key links, scope sanity. Every finding carries **BLOCKER** or **WARNING**. Maximum 3 structural-verification iterations; a BLOCKER still open after iteration 3 escalates to the user. Never attempt iteration 4.
+Dispatch a subagent on the **`review` slot** (decision 0021 — `resolveTier(root, 'review', runtime)`, default opus on Claude, generation fallback; state the model explicitly; if the runtime cannot select per-agent models, cap its reads and output instead).
+On Claude Code, spawn `subagent_type: "bee-review"` when `.claude/agents/bee-review.md` exists (W3, AO5/AO10) — bee's own rendered agent for the review tier, never `general-purpose` (`bee-model-guard` denies that pairing).
+The plan-checker is a **read-only gather**, never a cell — when the review slot is cli-shaped, resolve it with the purpose-scoped 4-arg form, `resolveTier(root, 'review', runtime, {for:'gather'})`, per the Delegation contract's cli gather branch (`bee-hive/references/routing-and-contracts.md`); a bare 3-arg resolve of a cli-shaped review slot now refuses (AO12/B1, plan 2A-ii). A model-shaped review slot is unaffected by purpose — dispatch it exactly as before — **in the background where the runtime supports it** (decision 0017): continue the spike/matrix/cell-review work while it runs; its findings block nothing until the Gate 3 presentation, which never happens with the checker still outstanding. It assumes the plan is flawed and verifies 5 dimensions: requirement/decision coverage, cell completeness, dependency correctness, key links, scope sanity. Every finding carries **BLOCKER** or **WARNING**. Maximum 3 structural-verification iterations; a BLOCKER still open after iteration 3 escalates to the user. Never attempt iteration 4.
 
 **High-risk lane:** scale to a persona panel — coherence + feasibility lenses always, plus conditional lenses (security, product, scope-guardian) chosen by the diff of concerns. Dedupe findings, then synthesize into auto-fix vs present-for-decision buckets.
 
 ## Cell Review (cold pickup)
 
-Dispatch the cell reviewer (`review` slot, decision 0021): could a worker with no session history pick each cell up cold? **CRITICAL** flags — assumed context, vague acceptance, scope overload, unproven feasibility, broken verify — must be fixed before approval. **MINOR** flags may ship with a recorded note.
+Dispatch the cell reviewer (`review` slot, decision 0021).
+This is the same `bee-review` subagent_type as the plan-checker above.
+Could a worker with no session history pick each cell up cold? **CRITICAL** flags — assumed context, vague acceptance, scope overload, unproven feasibility, broken verify — must be fixed before approval. **MINOR** flags may ship with a recorded note.
 
 ## Decision Vocabulary
 
@@ -78,6 +82,23 @@ NOT READY - RETURN TO PLANNING
 READY is a feasibility verdict, not execution approval — Gate 3 still requires the user.
 
 ## Gate 3 — Execution Approval
+
+**Advisor consult (AO2b/AO3/AO4) — runs before this gate opens, at every bypass level.** For a high-risk or hard-gate slice, the orchestrator consults the configured advisor **before** presenting Gate 3 to the human, and before self-approving it under any bypass level (`normal`/`full`/`total` lift the *human* checkpoint below — they never lift this mechanical precondition). Resolve the advisor from config (`resolveAdvisor(root, runtime)`):
+- **cli-shaped** advisor → run the configured command verbatim, read-only, with an evidence bundle on stdin (plan summary, risk map, validation findings, open questions — never session history, never secrets) and capture the digest.
+- **model-shaped** advisor → dispatch a `bee-review`-class read-only run with the same evidence bundle.
+- **unconfigured** advisor (`resolveAdvisor` returns `null`) → record that fact and proceed. AO2(b) adds one trigger; it is not a hard dependency on an advisor being configured.
+
+Then record the consult: `node .bee/bin/bee.mjs state advisor-ref record --advisor "<identity>" --digest-file <path>` (the verb stamps the staleness anchors itself — the caller supplies only the advisor identity and the digest file).
+
+**Enforcement is a throw, not a warning.** For high-risk work, `node .bee/bin/bee.mjs state gate --name execution --approved true` refuses — throws, never just warns — when the selected record's `advisor_ref` is missing or stale (AO3/AO13). Nothing is written until a non-stale `advisor_ref` exists; this is CLI-enforced, not optional ceremony. An `advisor_ref` is stale if **any** of (AO13, verbatim):
+1. its feature differs from `state.feature`;
+2. the newest active decision id changed since the consult;
+3. `sha256(plan.md)` changed since the consult;
+4. the ref predates the most recent revocation of the execution gate.
+
+Never a time-based TTL — AO13 already burned this feature on one invented number once.
+
+**Advice never approves a gate and never overrides a locked decision.** The consult's digest is data for the human decision, not a decision itself (critical rule 13, existing law); an advisor result that conflicts with a locked `CONTEXT.md` decision is surfaced to the human, never silently followed or used to auto-approve.
 
 Write the full machine report (reality gate, matrix, plan-checker findings, cell review, approval block) to `docs/history/<feature>/reports/validation-<slice>.md`. For `small`/`standard`/`high-risk`, invoke `bee-briefing` in refresh mode to patch the implement plan's Validation Plan section with the accepted evidence links (and to flip its `status` if a source changed), so the Gate 3 message links a current brief. Then present **only the human layer** in chat per the Gate Presentation Contract (template in the reference): what I'm about to do / why it's trustworthy / if it goes wrong / what you are deciding — in the user's language, jargon-free, implement plan + report linked — then ask verbatim: **"Feasibility validated. Approve execution?"** Optionally offer a cross-model second opinion first (agreement → mention it; disagreement → quote both positions; never auto-resolve). Approval covers the **current work only**; future slices return to planning and validating.
 
@@ -105,6 +126,8 @@ With `mode:headless`: run every check, apply unambiguous cell repairs, and defer
 - CRITICAL cell flags left unfixed at approval time
 - a tiny fix wearing epic ceremony; a hard-gate change routed below high-risk
 - self-approving Gate 3, in any mode
+- presenting or auto-approving Gate 3 for high-risk/hard-gate work without first running the advisor consult and recording a non-stale `advisor_ref` (AO2b/AO3/AO13)
+- treating an advisor digest as a decision instead of data, or letting it silently override a locked `CONTEXT.md` decision
 
 Violating the letter of the rules is violating the spirit of the rules.
 

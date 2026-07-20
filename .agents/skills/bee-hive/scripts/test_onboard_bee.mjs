@@ -160,6 +160,120 @@ try {
     "per-project skill trees are never gitignored (D4: committed to the host repo)",
     gitignoreAfterApply);
 
+  // --- 2c. bee agent files (config-rendered pinned agent types, Slice 3B) ---
+  // Fresh repo, default config.json (extraction: haiku, generation: sonnet,
+  // review unset -> AGENT_TIER_DEFAULTS_CLAUDE fallback opus). must_haves:
+  // "three agent files render into .claude/agents/ with model values taken
+  // from live config, never hardcoded in the template output path".
+  const agentFilePath = (name) => path.join(tmp, ".claude", "agents", `${name}.md`);
+  for (const [name, tier, model] of [
+    ["bee-gather", "generation", "sonnet"],
+    ["bee-extract", "extraction", "haiku"],
+    ["bee-review", "review", "opus"],
+  ]) {
+    check(fs.existsSync(agentFilePath(name)), `${name}.md is rendered on fresh apply`);
+    const text = fs.existsSync(agentFilePath(name)) ? fs.readFileSync(agentFilePath(name), "utf8") : "";
+    check(text.includes(`name: ${name}`), `${name}.md frontmatter carries its own name`, text);
+    check(text.includes(`model: ${model}`),
+      `${name}.md frontmatter model comes from the configured ${tier} tier (${model}), not a hardcoded pin`,
+      text);
+    check(!text.includes("{{TIER_MODEL}}"), `${name}.md has no unrendered {{TIER_MODEL}} placeholder`, text);
+    check(!/\bcost[- ]?reduc/i.test(text), `${name}.md makes no cost-reduction claim`, text);
+  }
+
+  // AO10: agents root is never joined to REPO_SKILL_TARGETS (regression guard
+  // against the exact change plan.md flagged as forbidden).
+  const onboardSourceForRegressionGuard = fs.readFileSync(path.join(SCRIPTS_DIR, "onboard_bee.mjs"), "utf8");
+  const repoSkillTargetsMatch = onboardSourceForRegressionGuard.match(/REPO_SKILL_TARGETS = \[([\s\S]*?)\];/);
+  // "repo-agents" (the existing .agents/skills target's `kind`) legitimately
+  // contains the substring "agents" - the forbidden shape is a `segments`
+  // array naming a plain "agents" directory (an agents ROOT, e.g. `[".claude",
+  // "agents"]`), not the `kind` label. Match on `segments` arrays only.
+  const repoSkillTargetsSegments = [...(repoSkillTargetsMatch?.[1] || "").matchAll(/segments:\s*\[([^\]]*)\]/g)]
+    .map((m) => m[1]);
+  check(Boolean(repoSkillTargetsMatch) && repoSkillTargetsSegments.length === 2 &&
+    repoSkillTargetsSegments.every((s) => !/"agents"/.test(s)),
+    "REPO_SKILL_TARGETS is untouched - no agents-root segments entry (AO10)",
+    JSON.stringify(repoSkillTargetsSegments));
+
+  // AO11: Codex gets no agent files at all - the asymmetry is recorded, not
+  // silently absent.
+  check(!fs.existsSync(path.join(tmp, ".agents", "agents")),
+    ".agents/ receives no agent files (AO11 - no .agents/agents root at all)");
+  const onboardingAfterApply1 = JSON.parse(fs.readFileSync(path.join(tmp, ".bee", "onboarding.json"), "utf8"));
+  check(onboardingAfterApply1.agents_sync?.bee_version === apply1.payload?.bee_version,
+    "onboarding.json agents_sync carries the sync's own bee_version marker",
+    JSON.stringify(onboardingAfterApply1.agents_sync));
+  check(JSON.stringify((onboardingAfterApply1.agents_sync?.files || []).slice().sort()) ===
+    JSON.stringify([".claude/agents/bee-extract.md", ".claude/agents/bee-gather.md", ".claude/agents/bee-review.md"]),
+    "onboarding.json agents_sync.files names all three rendered agent files",
+    JSON.stringify(onboardingAfterApply1.agents_sync?.files));
+  const sortedEntries = (o) => JSON.stringify(Object.entries(o || {}).sort());
+  check(sortedEntries(onboardingAfterApply1.agents_sync?.rendered_from) ===
+    sortedEntries({ generation: "sonnet", extraction: "haiku", review: "opus" }),
+    "onboarding.json agents_sync.rendered_from records {tier: model} from live config",
+    JSON.stringify(onboardingAfterApply1.agents_sync?.rendered_from));
+  check(Array.isArray(onboardingAfterApply1.agents_sync?.codex?.agents) &&
+    onboardingAfterApply1.agents_sync.codex.agents.length === 0 &&
+    /AO11/.test(onboardingAfterApply1.agents_sync.codex.note || ""),
+    "onboarding.json agents_sync records the Codex asymmetry (AO11) inline, no separate file",
+    JSON.stringify(onboardingAfterApply1.agents_sync?.codex));
+
+  // Idempotency: must_haves "re-running self-onboard is idempotent (same
+  // bytes, marker refreshed)". Snapshot bytes, re-apply, compare.
+  const agentBytesBefore = {
+    "bee-gather": fs.readFileSync(agentFilePath("bee-gather")),
+    "bee-extract": fs.readFileSync(agentFilePath("bee-extract")),
+    "bee-review": fs.readFileSync(agentFilePath("bee-review")),
+  };
+  const reapplyForIdempotency = await runOnboard(["--repo-root", tmp, "--apply", "--json"], tmpHome);
+  check(reapplyForIdempotency.payload?.status === "applied", "idempotency re-apply succeeds");
+  const reapplyActions = (reapplyForIdempotency.payload?.applied || []).map((i) => i.action);
+  check(!reapplyActions.includes("sync_agent_file") && !reapplyActions.includes("remove_agent_file"),
+    "a no-drift re-apply plans zero agent-file actions (already current)",
+    JSON.stringify(reapplyActions));
+  for (const name of ["bee-gather", "bee-extract", "bee-review"]) {
+    check(fs.readFileSync(agentFilePath(name)).equals(agentBytesBefore[name]),
+      `${name}.md is byte-identical after a no-drift re-apply`);
+  }
+  const onboardingAfterReapply = JSON.parse(fs.readFileSync(path.join(tmp, ".bee", "onboarding.json"), "utf8"));
+  check(onboardingAfterReapply.updated_at !== onboardingAfterApply1.updated_at,
+    "onboarding.json marker (updated_at) refreshes on every apply, even a byte-idempotent one");
+
+  // --- 2d. cli-shaped / explicit-null tier: skip render, remove stale copy --
+  // must_haves: "a cli-shaped or null tier slot skips (and removes) its
+  // agent file, recorded in the sync record".
+  const cliTmp = fs.mkdtempSync(path.join(os.tmpdir(), "bee-agentfiles-cli-"));
+  const cliHome = makeFakeHome();
+  await runOnboard(["--repo-root", cliTmp, "--apply", "--json"], cliHome);
+  check(fs.existsSync(path.join(cliTmp, ".claude", "agents", "bee-review.md")),
+    "precondition: bee-review.md renders under the default (opus) review tier");
+  const cliCfgPath = path.join(cliTmp, ".bee", "config.json");
+  const cliCfg = JSON.parse(fs.readFileSync(cliCfgPath, "utf8"));
+  cliCfg.models.claude.review = { kind: "cli", command: "true" };
+  fs.writeFileSync(cliCfgPath, `${JSON.stringify(cliCfg, null, 2)}\n`, "utf8");
+  const cliPlan = await runOnboard(["--repo-root", cliTmp, "--json"], cliHome);
+  const cliPlanActions = (cliPlan.payload?.plan || []).filter((i) => i.agent === "bee-review");
+  check(cliPlanActions.length === 1 && cliPlanActions[0].action === "remove_agent_file",
+    "a cli-shaped review tier plans remove_agent_file for bee-review.md",
+    JSON.stringify(cliPlanActions));
+  const cliApply = await runOnboard(["--repo-root", cliTmp, "--apply", "--json"], cliHome);
+  check(cliApply.payload?.status === "applied", "cli-tier apply succeeds", JSON.stringify(cliApply.payload));
+  check(!fs.existsSync(path.join(cliTmp, ".claude", "agents", "bee-review.md")),
+    "bee-review.md is removed once its tier becomes cli-shaped");
+  check(fs.existsSync(path.join(cliTmp, ".claude", "agents", "bee-gather.md")) &&
+    fs.existsSync(path.join(cliTmp, ".claude", "agents", "bee-extract.md")),
+    "the other two agent files are untouched by the cli-tier removal");
+  const cliOnboarding = JSON.parse(fs.readFileSync(path.join(cliTmp, ".bee", "onboarding.json"), "utf8"));
+  check(!("review" in (cliOnboarding.agents_sync?.rendered_from || {})) &&
+    !(cliOnboarding.agents_sync?.files || []).includes(".claude/agents/bee-review.md"),
+    "agents_sync record drops the cli-shaped review tier from files/rendered_from",
+    JSON.stringify(cliOnboarding.agents_sync));
+  const cliRecheck = await runOnboard(["--repo-root", cliTmp, "--json"], cliHome);
+  check(cliRecheck.payload?.status === "up_to_date",
+    "cli-tier repo settles to up_to_date after the removal apply",
+    JSON.stringify(cliRecheck.payload?.plan));
+
   // --- 3. verify AGENTS.md markers ------------------------------------------
   const agentsText = fs.existsSync(path.join(tmp, "AGENTS.md"))
     ? fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8")
@@ -227,6 +341,18 @@ try {
   check(stateWarning.length > 0 && stateWarning === onboardWarning,
     "onboard_bee.mjs STALE_ADVISOR_KEY_WARNING text matches lib/state.mjs (no drift)",
     `state: "${stateWarning}" vs onboard: "${onboardWarning}"`);
+
+  // --- 3b-drift2. AGENT_TIER_DEFAULTS_CLAUDE must not drift from state.mjs
+  // DEFAULT_MODELS.claude (same discipline as the two checks just above -
+  // onboard_bee.mjs never import-depends on state.mjs's exports, so the
+  // claude-runtime tier defaults are duplicated, and pinned here instead).
+  const stateDefaultsMatch = stateSource.match(/DEFAULT_MODELS = \{[\s\S]*?claude:\s*\{([^}]+)\}/);
+  const onboardDefaultsMatch = onboardSource.match(/AGENT_TIER_DEFAULTS_CLAUDE = \{([^}]+)\}/);
+  const normDefaults = (s) => (s || "").replace(/["'\s]/g, "");
+  check(Boolean(stateDefaultsMatch) && Boolean(onboardDefaultsMatch) &&
+    normDefaults(stateDefaultsMatch[1]) === normDefaults(onboardDefaultsMatch[1]),
+    "onboard_bee.mjs AGENT_TIER_DEFAULTS_CLAUDE matches lib/state.mjs DEFAULT_MODELS.claude (no drift)",
+    `state: "${stateDefaultsMatch?.[1]}" vs onboard: "${onboardDefaultsMatch?.[1]}"`);
 
   // --- 3b-advisor. a host fixture with a stale advisor key surfaces the
   // stale-key notice (P1, fanout-4 review fix); the notice disappears once the
@@ -529,9 +655,22 @@ try {
   const writeGuardEntries = preToolUse.filter((e) =>
     (e.hooks || []).some((h) => String(h.command || "").includes("bee-write-guard.mjs")));
   check(writeGuardEntries.length === 1 &&
-    writeGuardEntries[0].matcher === "Edit|Write|MultiEdit|Bash|Read|Glob|Grep",
+    writeGuardEntries[0].matcher === "Edit|Write|MultiEdit|Bash|Read|Glob|Grep|AskUserQuestion",
     "exactly one PreToolUse entry wires bee-write-guard.mjs, matcher is byte-identical to the write-guard matcher",
     JSON.stringify(writeGuardEntries));
+
+  // D4 (codex-native-runtime-v2): renderRepoHookEntries()'s PostToolUse
+  // matcher for bee-state-sync.mjs must carry the update_plan superset
+  // (never a swap) - parsed structurally, not string-contained, so a matcher
+  // that dropped a legacy name would turn this red instead of hiding behind
+  // "settings.json still mentions bee-state-sync.mjs somewhere".
+  const postToolUse = Array.isArray(settings.hooks?.PostToolUse) ? settings.hooks.PostToolUse : [];
+  const stateSyncEntries = postToolUse.filter((e) =>
+    (e.hooks || []).some((h) => String(h.command || "").includes("bee-state-sync.mjs")));
+  check(stateSyncEntries.length === 1 &&
+    stateSyncEntries[0].matcher === "update_plan|TaskCreate|TaskUpdate|TodoWrite",
+    "exactly one PostToolUse entry wires bee-state-sync.mjs, matcher is exactly the update_plan superset",
+    JSON.stringify(stateSyncEntries));
 
   // model-guard must not be folded into any other event or entry anywhere in
   // the applied settings tree.
@@ -635,8 +774,18 @@ try {
   const codexRepoText = JSON.stringify(codexRepo);
   check(!codexRepoText.includes("CLAUDE_PROJECT_DIR"),
     ".codex/hooks.json never uses $CLAUDE_PROJECT_DIR (Codex never sets it)");
-  check(!codexRepoText.includes("bee-model-guard.mjs"),
-    ".codex/hooks.json never wires bee-model-guard.mjs (Claude-only per catalog ALLOWED_DIFFERENCES)");
+  // cnr2-8 (codex-native-runtime-v2 D4): the Codex projection DOES wire
+  // bee-model-guard.mjs, but on the spawn_agent matcher (Claude uses Agent|Task)
+  // — a per-runtime matcher difference pinned in ALLOWED_DIFFERENCES, not a
+  // Claude-only guard. Structural check: exactly one PreToolUse entry whose
+  // matcher is "spawn_agent" wires the guard.
+  const codexPreToolUse = Array.isArray(codexRepo.hooks?.PreToolUse) ? codexRepo.hooks.PreToolUse : [];
+  const codexSpawnGuardEntries = codexPreToolUse.filter((e) =>
+    e.matcher === "spawn_agent" &&
+    (e.hooks || []).some((h) => String(h.command || "").includes("bee-model-guard.mjs")));
+  check(codexSpawnGuardEntries.length === 1,
+    ".codex/hooks.json wires bee-model-guard.mjs on exactly one PreToolUse spawn_agent entry (Codex spawn guard)",
+    JSON.stringify(codexPreToolUse));
   let codexCommandCount = 0;
   let codexTransportOk = true;
   let codexStatusMessageOk = true;
@@ -666,7 +815,7 @@ try {
       }
     }
   }
-  check(codexCommandCount === 11, ".codex/hooks.json wires exactly 11 hook commands",
+  check(codexCommandCount === 13, ".codex/hooks.json wires exactly 13 hook commands",
     `count: ${codexCommandCount}`);
   check(codexTransportOk,
     "every .codex/hooks.json command uses the git-root transport with the pinned fail-open diagnostic");
@@ -679,6 +828,19 @@ try {
     JSON.stringify(["SubagentStart", "SubagentStop"]),
     "generated Codex SubagentStart and SubagentStop each resolve to the copied bounded audit handler",
     JSON.stringify(codexAuditEvents));
+
+  // D4 (codex-native-runtime-v2): renderCodexHookEntries()'s PostToolUse
+  // matcher for bee-state-sync.mjs must carry the update_plan superset -
+  // parsed structurally (own row, independent of the triple-parity check
+  // below), so a matcher regression here cannot hide behind that check
+  // accidentally passing for an unrelated reason.
+  const codexPostToolUse = Array.isArray(codexRepo.hooks?.PostToolUse) ? codexRepo.hooks.PostToolUse : [];
+  const codexStateSyncEntries = codexPostToolUse.filter((e) =>
+    (e.hooks || []).some((h) => String(h.command || "").includes("bee-state-sync.mjs")));
+  check(codexStateSyncEntries.length === 1 &&
+    codexStateSyncEntries[0].matcher === "update_plan|TaskCreate|TaskUpdate|TodoWrite",
+    "exactly one .codex/hooks.json PostToolUse entry wires bee-state-sync.mjs, matcher is exactly the update_plan superset",
+    JSON.stringify(codexStateSyncEntries));
 
   // Parity with the checked-in Codex plugin projection: identical
   // (event, matcher, filename) triples — only the command root differs.
@@ -1212,6 +1374,8 @@ try {
     ".bee/claims/",
     ".bee/runtime/",
     ".bee/cache/",
+    ".bee/doctor-attest.json",
+    ".bee/native-transport-probe.json",
   ];
   const expectedGitignoreBlockSource =
     `# BEE:START\n${GITIGNORE_PATTERNS_FOR_HASH.join("\n")}\n# BEE:END\n`;
@@ -1370,6 +1534,196 @@ try {
   } catch {
     // best-effort cleanup
   }
+}
+
+// --- 9b. codex-hybrid (GH #22 P0-1) ------------------------------------------
+// --plugin-source alone installs plugin skills but no hooks: codex-cli has no
+// plugin-hook mechanism (capability matrix row B1), so a plugin-first-onboarded
+// repo used to report itself onboarded while carrying ZERO mechanical
+// enforcement for Codex sessions. --runtime codex|both (default both) now
+// ALWAYS also vendors .bee/bin/hooks/ and merges .codex/hooks.json under
+// --plugin-source, reusing the exact --repo-hooks codex projection. Uses the
+// REAL script directly (not a version-pinned fixture), same as the plain
+// --repo-hooks tests above — plugin-source's own release-identity gate
+// resolves fine against the running repo's own self-consistent tree.
+{
+  const hybridTmp = fs.mkdtempSync(path.join(os.tmpdir(), "bee-codex-hybrid-"));
+
+  // (a) plugin-source + runtime codex -> .codex/hooks.json AND vendored
+  // .bee/bin/hooks/ are written; project skill projections stay absent
+  // (plugin-source's existing behavior for skills is untouched).
+  {
+    const repo = path.join(hybridTmp, "runtime-codex");
+    fs.mkdirSync(repo, { recursive: true });
+    const home = makeFakeHome();
+
+    const apply = await runOnboard(
+      ["--repo-root", repo, "--apply", "--plugin-source", "--runtime", "codex", "--json"], home);
+    check(apply.payload?.status === "applied",
+      "codex-hybrid: plugin-source + runtime codex apply succeeds",
+      JSON.stringify(apply.payload));
+    check(fs.existsSync(path.join(repo, ".codex", "hooks.json")),
+      "codex-hybrid: .codex/hooks.json is written");
+    const hooksDir = path.join(repo, ".bee", "bin", "hooks");
+    check(listMjs(hooksDir).length > 0,
+      "codex-hybrid: .bee/bin/hooks/ is vendored");
+    const codexHooksText = fs.readFileSync(path.join(repo, ".codex", "hooks.json"), "utf8");
+    check(codexHooksText.includes(".bee/bin/hooks/bee-write-guard.mjs"),
+      "codex-hybrid: .codex/hooks.json wires bee-write-guard.mjs");
+    check(!fs.existsSync(path.join(repo, ".claude", "skills")) &&
+      !fs.existsSync(path.join(repo, ".agents", "skills")),
+      "codex-hybrid: plugin-source still skips project skill projections");
+    check(apply.payload?.onboarding?.managed?.codex_hooks &&
+      Object.keys(apply.payload.onboarding.managed.codex_hooks).length > 0,
+      "codex-hybrid: onboarding.json managed set records codex_hooks",
+      JSON.stringify(apply.payload?.onboarding?.managed));
+    check(!apply.payload?.onboarding?.managed?.repo_hooks,
+      "codex-hybrid: onboarding.json managed set never records repo_hooks (that key is --repo-hooks-only)");
+
+    const recheck = await runOnboard(
+      ["--repo-root", repo, "--plugin-source", "--runtime", "codex", "--json"], home);
+    check(recheck.payload?.status === "up_to_date",
+      "codex-hybrid: immediate recheck is up_to_date",
+      JSON.stringify(recheck.payload?.plan || []));
+  }
+
+  // (a2) --runtime both (the default) covers codex too — same effect as
+  // explicit --runtime codex, and matches install.sh's own default.
+  {
+    const repo = path.join(hybridTmp, "runtime-both-default");
+    fs.mkdirSync(repo, { recursive: true });
+    const home = makeFakeHome();
+
+    const apply = await runOnboard(["--repo-root", repo, "--apply", "--plugin-source", "--json"], home);
+    check(apply.payload?.status === "applied",
+      "codex-hybrid: plugin-source with no --runtime (default both) apply succeeds");
+    check(fs.existsSync(path.join(repo, ".codex", "hooks.json")),
+      "codex-hybrid: default --runtime both also writes .codex/hooks.json");
+  }
+
+  // (b) plugin-source + runtime claude -> NO codex files, NO claude repo-local
+  // hook entries either — exclusivity byte-identical to plain --plugin-source
+  // before --runtime existed.
+  {
+    const repo = path.join(hybridTmp, "runtime-claude");
+    fs.mkdirSync(repo, { recursive: true });
+    const home = makeFakeHome();
+
+    const apply = await runOnboard(
+      ["--repo-root", repo, "--apply", "--plugin-source", "--runtime", "claude", "--json"], home);
+    check(apply.payload?.status === "applied",
+      "codex-hybrid: plugin-source + runtime claude apply succeeds");
+    check(!fs.existsSync(path.join(repo, ".codex", "hooks.json")),
+      "codex-hybrid: runtime claude writes no .codex/hooks.json");
+    check(!fs.existsSync(path.join(repo, ".bee", "bin", "hooks")),
+      "codex-hybrid: runtime claude vendors no .bee/bin/hooks/");
+    check(!fs.existsSync(path.join(repo, ".claude", "settings.json")),
+      "codex-hybrid: runtime claude writes no .claude/settings.json (plugin-first relies on the plugin's own Claude hooks)");
+    check(!apply.payload?.onboarding?.managed?.codex_hooks &&
+      !apply.payload?.onboarding?.managed?.repo_hooks,
+      "codex-hybrid: runtime claude records neither codex_hooks nor repo_hooks",
+      JSON.stringify(apply.payload?.onboarding?.managed));
+
+    // (5) managed-set gating (advisor R5): a claude-only run's recheck must
+    // never report codex drift — a phantom changes_needed would mean the
+    // managed-set gate leaked codex_hooks expectations into a claude-only run.
+    const recheck = await runOnboard(
+      ["--repo-root", repo, "--plugin-source", "--runtime", "claude", "--json"], home);
+    check(recheck.payload?.status === "up_to_date",
+      "codex-hybrid: runtime claude reports no phantom codex drift on recheck",
+      JSON.stringify(recheck.payload?.plan || []));
+  }
+
+  // (c) typed blocked apply (advisor R3): a `.codex` path occupied by a plain
+  // FILE must refuse the WHOLE apply with a typed {status, reason, forceable}
+  // result — never an untyped {error: ...} crash — and mutate nothing (D3
+  // fail-closed: skills/doctrine must never be reported applied without the
+  // hooks that make them mechanically enforced for Codex).
+  {
+    const repo = path.join(hybridTmp, "blocked-codex-file");
+    fs.mkdirSync(repo, { recursive: true });
+    fs.writeFileSync(path.join(repo, ".codex"), "not a directory\n", "utf8");
+    const home = makeFakeHome();
+    const before = hashTree(repo);
+
+    const apply = await runOnboard(
+      ["--repo-root", repo, "--apply", "--plugin-source", "--runtime", "codex", "--json"], home);
+    check(apply.status === 1, "codex-hybrid blocked: apply exits nonzero", String(apply.status));
+    check(apply.payload !== null, "codex-hybrid blocked: output is valid JSON (never an untyped crash)",
+      apply.stdout || "");
+    check(apply.payload?.status === "blocked",
+      "codex-hybrid blocked: typed status is 'blocked'", JSON.stringify(apply.payload));
+    check(typeof apply.payload?.reason === "string" &&
+      /repo-copy|hybrid apply/i.test(apply.payload.reason),
+      "codex-hybrid blocked: reason names repo-copy or a hybrid retry",
+      String(apply.payload?.reason));
+    check(apply.payload?.error === undefined,
+      "codex-hybrid blocked: never falls through to the generic untyped {error} shape",
+      JSON.stringify(apply.payload));
+    check(hashTree(repo) === before,
+      "codex-hybrid blocked: zero mutation — the whole apply refuses, not just the hook write");
+  }
+
+  fs.rmSync(hybridTmp, { recursive: true, force: true });
+}
+
+// --- 9c. sticky repo-hooks record under --plugin-source (point 6) -----------
+// A repo that once recorded a full --repo-hooks install (Claude + Codex
+// repo-local wiring) and is re-onboarded as --plugin-source must not have
+// that record silently carried forward while the mechanism underneath it
+// quietly changed shape. The record is allowed to lapse (repoHooks is always
+// false under --plugin-source), but the transition is surfaced as a notice
+// in the SAME run, naming what survives (codex-hybrid, when --runtime covers
+// codex) and what does not (Claude repo-local entries, always).
+{
+  const stickyPluginTmp = fs.mkdtempSync(path.join(os.tmpdir(), "bee-sticky-plugin-source-"));
+
+  // (a) --runtime codex: the codex portion is honestly replaced by the
+  // codex-hybrid projection; the notice says so.
+  {
+    const repo = path.join(stickyPluginTmp, "codex-covered");
+    fs.mkdirSync(repo, { recursive: true });
+    const home = makeFakeHome();
+
+    await runOnboard(["--repo-root", repo, "--apply", "--repo-hooks", "--json"], home);
+    check(JSON.parse(fs.readFileSync(path.join(repo, ".bee", "onboarding.json"), "utf8"))
+      .managed?.repo_hooks, "sticky/plugin-source precondition: repo_hooks recorded after --repo-hooks");
+
+    const apply = await runOnboard(
+      ["--repo-root", repo, "--apply", "--plugin-source", "--runtime", "codex", "--json"], home);
+    check(apply.payload?.status === "applied",
+      "sticky/plugin-source: re-onboard as plugin-source + runtime codex applies cleanly");
+    const onboarding = JSON.parse(fs.readFileSync(path.join(repo, ".bee", "onboarding.json"), "utf8"));
+    check(!onboarding.managed?.repo_hooks,
+      "sticky/plugin-source: the stale repo_hooks record is NOT silently carried forward",
+      JSON.stringify(onboarding.managed));
+    check(!!onboarding.managed?.codex_hooks,
+      "sticky/plugin-source: codex_hooks now records the surviving codex-hybrid coverage");
+    check((apply.payload?.notices || []).some((n) => /previously opted into --repo-hooks/.test(n) &&
+      /codex-hybrid/.test(n)),
+      "sticky/plugin-source: a notice surfaces the transition and names codex-hybrid as the replacement",
+      JSON.stringify(apply.payload?.notices));
+  }
+
+  // (b) --runtime claude: NO replacement covers Codex any more — the notice
+  // says so plainly instead of staying silent about the regression.
+  {
+    const repo = path.join(stickyPluginTmp, "claude-only");
+    fs.mkdirSync(repo, { recursive: true });
+    const home = makeFakeHome();
+
+    await runOnboard(["--repo-root", repo, "--apply", "--repo-hooks", "--json"], home);
+    const apply = await runOnboard(
+      ["--repo-root", repo, "--apply", "--plugin-source", "--runtime", "claude", "--json"], home);
+    check(apply.payload?.status === "applied",
+      "sticky/plugin-source: re-onboard as plugin-source + runtime claude applies cleanly");
+    check((apply.payload?.notices || []).some((n) => /previously opted into --repo-hooks/.test(n) &&
+      /retires ALL repo-local hook entries, including Codex/.test(n)),
+      "sticky/plugin-source: runtime claude's notice names the Codex coverage loss plainly",
+      JSON.stringify(apply.payload?.notices));
+  }
+
+  fs.rmSync(stickyPluginTmp, { recursive: true, force: true });
 }
 
 // --- 10. skill-sync (D1-D5): safety-critical behavioral cases ---------------
@@ -2075,6 +2429,15 @@ for (const scenario of [
       "refused force reports no forced_downgrade");
     check(hashTree(home) === homeBefore && hashTree(repo) === repoBefore,
       "unforceable refusal keeps repo and target byte-identical");
+    // P49 (advisor finding 1/4): a non-forceable refusal never invites a
+    // force - host_items is omitted entirely, not an empty array, so a
+    // consumer can't mistake "nothing to force" for "forceable with none".
+    check(apply.payload?.host_items === undefined,
+      "unknown-version refusal carries NO host_items field",
+      JSON.stringify(apply.payload?.host_items));
+    check(forced.payload?.host_items === undefined,
+      "unknown-version refusal via --force-downgrade also carries no host_items",
+      JSON.stringify(forced.payload?.host_items));
   } finally {
     try {
       fs.rmSync(base, { recursive: true, force: true });
@@ -3326,6 +3689,194 @@ for (const scenario of [
   }
 }
 
+// --- 10z1. host_items: refused-apply payload enumerates the copy_lib/ -------
+// copy_helper blast radius a --force-downgrade would overwrite under
+// .bee/bin (P49; docs/history/p49-force-downgrade-blast-radius/reports/
+// advisor-verdict.md findings 1-3, 5, 7). Follows 10v's three-step shape
+// (dry-run enumerates -> refused apply enumerates -> forced apply touches
+// exactly the previewed set) but STRENGTHENED: exact normalized
+// {action, path} array equality across all three steps (10v's :3311 discards
+// fields and tolerates a subset - not repeated here), and the fixture is
+// seeded so BOTH action classes fire. makeFakeSkillsRoot vendors every real
+// templates/lib/*.mjs (readdirSync) into the fake source but never a
+// top-level templates/*.mjs helper, so reusing it unchanged only ever
+// exercises copy_lib - the real top-level helper set is vendored here too,
+// itself via readdirSync of the real TEMPLATES_DIR (never a hand-kept
+// filename list - critical-patterns fixture-list-rot).
+{
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "bee-hostitems-enum-"));
+  const home = makeFakeHome();
+  try {
+    const { launcher } = makeFakeSkillsRoot(path.join(base, "skills"), {
+      version: "0.1.18",
+    });
+    const hiveDir = path.dirname(path.dirname(launcher));
+    const fakeTemplatesDir = path.join(hiveDir, "templates");
+    const realHelperNames = fs
+      .readdirSync(TEMPLATES_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
+      .map((e) => e.name);
+    for (const name of realHelperNames) {
+      fs.writeFileSync(
+        path.join(fakeTemplatesDir, name),
+        fs.readFileSync(path.join(TEMPLATES_DIR, name), "utf8"),
+        "utf8",
+      );
+    }
+    const repo = path.join(base, "repo");
+    fs.mkdirSync(path.join(repo, ".bee", "bin", "lib"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".bee", "bin", "lib", "state.mjs"),
+      fakeStateSource("0.1.19"), "utf8"); // newer than source -> forceable downgrade block
+    seedRepoSkillTargets(repo, "0.1.19"); // numeric per-target installs keep the refusal forceable
+
+    // No --global-skills here (unlike 10v/10e): the global target's own
+    // installed_skills would resolve "absent" while host_helpers (shared,
+    // repo-side) reads 0.1.19 > source 0.1.18 - a genuine but unforceable
+    // block on that ONE target (not all versions resolved numeric), which
+    // would drag the aggregate forceable to false for a reason unrelated to
+    // what this case tests. Repo-local targets alone keep the scenario clean.
+    const plan = await runOnboardAt(launcher, ["--repo-root", repo, "--json"], home);
+    check(plan.status === 0 && plan.payload?.status === "blocked_downgrade",
+      "host-items: plan mode reports blocked_downgrade (forceable)",
+      `exit ${plan.status} status ${plan.payload?.status}`);
+
+    // Expected set, derived the SAME way onboard derives it (readdirSync,
+    // never hardcoded names): every real helper is absent from the repo's
+    // .bee/bin, every real lib module besides state.mjs is absent from
+    // .bee/bin/lib, and state.mjs itself is version-drifted - so every one
+    // of them is a pending copy_helper/copy_lib item.
+    const expectedHostItems = [
+      ...realHelperNames.slice().sort()
+        .map((name) => ({ action: "copy_helper", path: `.bee/bin/${name}` })),
+      ...fs.readdirSync(path.join(hiveDir, "templates", "lib"), { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
+        .map((e) => e.name).sort()
+        .map((name) => ({ action: "copy_lib", path: `.bee/bin/lib/${name}` })),
+    ];
+    check(expectedHostItems.some((i) => i.action === "copy_helper") &&
+      expectedHostItems.some((i) => i.action === "copy_lib"),
+      "host-items: fixture exercises BOTH copy_lib and copy_helper action classes",
+      JSON.stringify([...new Set(expectedHostItems.map((i) => i.action))]));
+
+    const planHostItems = (plan.payload?.plan || [])
+      .filter((i) => i.action === "copy_lib" || i.action === "copy_helper")
+      .map((i) => ({ action: i.action, path: i.path }));
+    check(JSON.stringify(planHostItems) === JSON.stringify(expectedHostItems),
+      "host-items: dry-run plan enumerates exactly the expected copy_lib/copy_helper set, order-preserved",
+      JSON.stringify({ planHostItems, expectedHostItems }));
+
+    const refused = await runOnboardAt(launcher, ["--repo-root", repo, "--apply", "--json"], home);
+    check(refused.status === 1 && refused.payload?.status === "blocked_downgrade",
+      "host-items: refused apply (no --force-downgrade) still reports blocked_downgrade");
+    const refusedHostItemsRaw = refused.payload?.host_items;
+    const refusedHostItems = (refusedHostItemsRaw || [])
+      .map((i) => ({ action: i.action, path: i.path }));
+    check(JSON.stringify(refusedHostItems) === JSON.stringify(expectedHostItems),
+      "host-items: refused apply's host_items is EXACT normalized {action,path} array equality with the dry-run plan (no subset tolerance, unlike 10v :3311)",
+      JSON.stringify({ refusedHostItems, expectedHostItems }));
+    check(Array.isArray(refusedHostItemsRaw) && refusedHostItemsRaw.every((i) =>
+      Object.keys(i).sort().join(",") === "action,path"),
+      "host-items: host items carry NO scope/target fields (advisor finding 7 - lib/helper paths are always repo-root-relative)",
+      JSON.stringify(refusedHostItemsRaw));
+
+    const forced = await runOnboardAt(launcher,
+      ["--repo-root", repo, "--apply", "--force-downgrade", "--json"], home);
+    check(forced.status === 0 && forced.payload?.status === "applied" &&
+      forced.payload?.forced_downgrade === true,
+      "host-items: forcing actually applies", `exit ${forced.status} status ${forced.payload?.status}`);
+    const appliedHostItems = (forced.payload?.applied || [])
+      .filter((i) => i.action === "copy_lib" || i.action === "copy_helper")
+      .map((i) => ({ action: i.action, path: i.path }));
+    check(JSON.stringify(appliedHostItems) === JSON.stringify(expectedHostItems),
+      "host-items: forced apply touches EXACTLY the previewed host_items set - exact equality, no subset tolerance",
+      JSON.stringify({ appliedHostItems, expectedHostItems }));
+  } finally {
+    try {
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
+// --- 10z2. host_items: forceable refusal with zero lib/helper drift ---------
+// carries host_items: [] (present, empty) - a forceable downgrade can be
+// driven purely by a target's own installed_skills version, with the host's
+// .bee/bin/lib and .bee/bin already byte-identical to source. Absence would
+// be indistinguishable from the non-forceable omission case (10d); presence
+// as an empty array tells the operator "nothing to force here" precisely.
+{
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "bee-hostitems-empty-"));
+  const home = makeFakeHome();
+  try {
+    const { launcher } = makeFakeSkillsRoot(path.join(base, "skills"), {
+      version: "0.1.18",
+    });
+    const hiveDir = path.dirname(path.dirname(launcher));
+    const fakeTemplatesDir = path.join(hiveDir, "templates");
+    const fakeTemplatesLibDir = path.join(hiveDir, "templates", "lib");
+    const realHelperNames = fs
+      .readdirSync(TEMPLATES_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
+      .map((e) => e.name);
+    for (const name of realHelperNames) {
+      fs.writeFileSync(
+        path.join(fakeTemplatesDir, name),
+        fs.readFileSync(path.join(TEMPLATES_DIR, name), "utf8"),
+        "utf8",
+      );
+    }
+    const repo = path.join(base, "repo");
+    fs.mkdirSync(path.join(repo, ".bee", "bin", "lib"), { recursive: true });
+    // Vendor the repo's .bee/bin + .bee/bin/lib byte-for-byte from the fake
+    // SOURCE tree (never the real repo tree, in case the two ever diverge) -
+    // zero drift by construction, discovered via readdirSync on each side.
+    for (const name of realHelperNames) {
+      fs.writeFileSync(path.join(repo, ".bee", "bin", name),
+        fs.readFileSync(path.join(fakeTemplatesDir, name), "utf8"), "utf8");
+    }
+    for (const name of fs.readdirSync(fakeTemplatesLibDir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
+      .map((e) => e.name)) {
+      fs.writeFileSync(path.join(repo, ".bee", "bin", "lib", name),
+        fs.readFileSync(path.join(fakeTemplatesLibDir, name), "utf8"), "utf8");
+    }
+    // The block itself comes solely from the in-repo targets' own
+    // installed_skills version being newer than source - host_helpers stays
+    // equal to source (0.1.18), so hostLibDowngradeBlock contributes nothing.
+    seedRepoSkillTargets(repo, "0.1.19");
+
+    const refused = await runOnboardAt(launcher, ["--repo-root", repo, "--apply", "--global-skills", "--json"], home);
+    check(refused.status === 1 && refused.payload?.status === "blocked_downgrade",
+      "host-items-empty: refused apply reports blocked_downgrade (forceable, target-version-driven)",
+      `exit ${refused.status} status ${refused.payload?.status}`);
+    check(refused.payload?.host_items !== undefined && Array.isArray(refused.payload?.host_items) &&
+      refused.payload.host_items.length === 0,
+      "host-items-empty: forceable refusal with zero lib/helper drift carries host_items: [] (present, empty)",
+      JSON.stringify(refused.payload?.host_items));
+
+    const forced = await runOnboardAt(launcher,
+      ["--repo-root", repo, "--apply", "--global-skills", "--force-downgrade", "--json"], home);
+    check(forced.status === 0 && forced.payload?.status === "applied" &&
+      forced.payload?.forced_downgrade === true,
+      "host-items-empty: forcing still applies (the skill-target downgrade)",
+      `exit ${forced.status} status ${forced.payload?.status}`);
+    const appliedHostItems = (forced.payload?.applied || [])
+      .filter((i) => i.action === "copy_lib" || i.action === "copy_helper");
+    check(appliedHostItems.length === 0,
+      "host-items-empty: forced apply touches no copy_lib/copy_helper items either (nothing was ever drifted)",
+      JSON.stringify(appliedHostItems));
+  } finally {
+    try {
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
 // --- 11. sticky repo-hooks opt-in -------------------------------------------
 // The bug this pins: --repo-hooks used to be re-consent owed on EVERY upgrade.
 // A bare --apply refreshed the doctrine block, helpers, and version stamp while
@@ -3702,6 +4253,97 @@ const RETIRED_HELPER_NAMES = [
     try {
       fs.rmSync(base, { recursive: true, force: true });
       fs.rmSync(home, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
+// --- 14. onboarding-generator drift check (H1) ------------------------------
+// hooks/catalog.mjs is the single logical source of truth for bee's hook set
+// (its own header). Three onboarding generators mirror it by hand: the
+// vendored-hook list (HOOK_FILENAMES, copied into .bee/bin/hooks/), the
+// Claude settings template (renderRepoHookEntries) and the Codex
+// repo-projection template (renderCodexHookEntries). A hook added to the
+// catalog without teaching all three generators is exactly the clobber class
+// from learnings/20260717-guard-membership-escape-routes.md Addendum 2 (P2
+// friction): the checked-in plugin projections self-correct via the
+// hooks/test_hook_contracts.mjs drift row, but these hand-authored generator
+// templates silently lagged and a live settings edit was clobbered by
+// self-onboard. This row fails RED naming the missing hook and the lagging
+// inventory, the moment a generator falls behind the catalog.
+//
+// Every side is read from what onboarding actually RENDERS into a fresh
+// fixture (never parsed from source text), so this row survives refactors of
+// the generator functions' internal shape. Per-runtime catalog sets come
+// straight from hooks/catalog.mjs renderProjection(), which already filters
+// per runtime (catalog.mjs:224) — no ALLOWED_DIFFERENCES arithmetic needed.
+{
+  function scriptNameFromCommand(command) {
+    const m = String(command || "").match(/([A-Za-z0-9_.-]+\.mjs)/);
+    return m ? m[1] : null;
+  }
+  function scriptNamesFromHooksObject(hooksObj) {
+    const names = new Set();
+    for (const entries of Object.values(hooksObj || {})) {
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        for (const hook of entry.hooks || []) {
+          const name = scriptNameFromCommand(hook.command);
+          if (name) names.add(name);
+        }
+      }
+    }
+    return names;
+  }
+
+  const catalogModulePath = path.join(REPO_ROOT, "hooks", "catalog.mjs");
+  const { renderProjection, RUNTIMES } = await import(pathToFileURL(catalogModulePath).href);
+  const claudeCatalogNames = scriptNamesFromHooksObject(renderProjection(RUNTIMES.CLAUDE).hooks);
+  const codexCatalogNames = scriptNamesFromHooksObject(renderProjection(RUNTIMES.CODEX).hooks);
+  const allCatalogNames = new Set([...claudeCatalogNames, ...codexCatalogNames]);
+
+  const driftTmp = fs.mkdtempSync(path.join(os.tmpdir(), "bee-onboard-drift-"));
+  const driftHome = makeFakeHome();
+  try {
+    await runOnboard(["--repo-root", driftTmp, "--apply", "--repo-hooks", "--json"], driftHome);
+
+    // generator 1: HOOK_FILENAMES (vendored-hook list) must cover every
+    // catalog script, either runtime — it is the single dir both runtime
+    // projections' commands resolve against on a host repo.
+    const hooksDir = path.join(driftTmp, ".bee", "bin", "hooks");
+    const vendoredNames = new Set(fs.existsSync(hooksDir) ? fs.readdirSync(hooksDir) : []);
+    const missingFromVendored = [...allCatalogNames].filter((n) => !vendoredNames.has(n));
+    check(missingFromVendored.length === 0,
+      "vendored-hook list (HOOK_FILENAMES) covers every hooks/catalog.mjs script",
+      JSON.stringify({ missingFromVendored }));
+
+    // generator 2: renderRepoHookEntries (Claude settings template).
+    const driftSettingsPath = path.join(driftTmp, ".claude", "settings.json");
+    const driftSettings = fs.existsSync(driftSettingsPath)
+      ? JSON.parse(fs.readFileSync(driftSettingsPath, "utf8"))
+      : { hooks: {} };
+    const claudeGeneratorNames = scriptNamesFromHooksObject(driftSettings.hooks);
+    const missingFromClaudeGenerator =
+      [...claudeCatalogNames].filter((n) => !claudeGeneratorNames.has(n));
+    check(missingFromClaudeGenerator.length === 0,
+      "Claude settings template (renderRepoHookEntries) covers every hooks/catalog.mjs claude-runtime script",
+      JSON.stringify({ missingFromClaudeGenerator }));
+
+    // generator 3: renderCodexHookEntries (Codex repo-projection template).
+    const driftCodexPath = path.join(driftTmp, ".codex", "hooks.json");
+    const driftCodex = fs.existsSync(driftCodexPath)
+      ? JSON.parse(fs.readFileSync(driftCodexPath, "utf8"))
+      : { hooks: {} };
+    const codexGeneratorNames = scriptNamesFromHooksObject(driftCodex.hooks);
+    const missingFromCodexGenerator =
+      [...codexCatalogNames].filter((n) => !codexGeneratorNames.has(n));
+    check(missingFromCodexGenerator.length === 0,
+      "Codex repo-projection template (renderCodexHookEntries) covers every hooks/catalog.mjs codex-runtime script",
+      JSON.stringify({ missingFromCodexGenerator }));
+  } finally {
+    try {
+      fs.rmSync(driftTmp, { recursive: true, force: true });
+      fs.rmSync(driftHome, { recursive: true, force: true });
     } catch {
       // best-effort cleanup
     }

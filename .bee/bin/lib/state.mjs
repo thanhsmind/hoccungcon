@@ -2,14 +2,24 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { readJson, writeJsonAtomic } from './fsutil.mjs';
 // Leaf-module imports only — no cycle: claims.mjs and reservations.mjs import
-// nothing but fsutil/node builtins (unlike cells.mjs, which imports THIS file).
+// only fsutil/lock.mjs/node builtins (unlike cells.mjs, which imports THIS
+// file) and never each other or this file, so composing both here stays
+// cycle-free (msh-5).
 import { readSession, readClaim, isClaimActive, claimsDir, adoptClaim } from './claims.mjs';
 import { pathsOverlap } from './reservations.mjs';
 import { readGrants } from './worktree-store.mjs';
+// D6 — startFeature's single read-check-write body runs inside this lock
+// (CLI verbs WAIT normally: no maxAttempts override here, unlike the hook-
+// driven touch path in claims.mjs/reservations.mjs).
+import { withStoreLock } from './lock.mjs';
+// decisions.mjs imports only node builtins + fsutil (no cycle back to this file);
+// advisorRefAnchors reads the newest active decision id through it (AO13).
+import { activeDecisions } from './decisions.mjs';
 
-export const BEE_VERSION = '1.3.12';
+export const BEE_VERSION = '1.7.3';
 
 export const GATE_NAMES = ['context', 'shape', 'execution', 'review'];
 
@@ -101,6 +111,7 @@ const DEFAULT_HOOKS = {
   'state-sync': true,
   'chain-nudge': true,
   'session-close': true,
+  'tools-logger': true,
 };
 
 // Decision 0012 — model tiers, runtime-keyed. bee is dual-runtime, and each
@@ -161,6 +172,53 @@ function normalizeTierValue(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     if (value.kind === 'cli' && typeof value.command === 'string' && value.command.trim()) {
       return { kind: 'cli', command: value.command.trim() };
+    }
+    // Native V2 model-override leaf (D2, codex-native-transport): a per-agent
+    // model switch that rides on codex spawn_agent metadata. Preserved through
+    // normalize (a shape normalizeTierValue does not keep is stripped, which
+    // would make the resolver branch dead code). Invalid fork_turns/effort are
+    // silently dropped here exactly as an invalid effort is on {model,effort};
+    // validateModelsConfig is the loud layer that flags them.
+    if (value.kind === 'native' && typeof value.model === 'string' && value.model.trim()) {
+      const out = { kind: 'native', model: value.model.trim() };
+      if (typeof value.effort === 'string' && EFFORT_LEVELS.includes(value.effort.trim())) {
+        out.effort = value.effort.trim();
+      }
+      if (typeof value.fork_turns === 'string' && value.fork_turns.trim() === 'none') {
+        out.fork_turns = 'none';
+      }
+      if (typeof value.agent_type === 'string' && value.agent_type.trim()) {
+        out.agent_type = value.agent_type.trim();
+      }
+      return out;
+    }
+    // Explicit-fallback composite (D1/D2): a native primary plus an opt-in cli
+    // fallback. The fallback is kept ONLY when fallback_policy is exactly
+    // 'explicit-only' — a composite missing that policy string normalizes to the
+    // native primary alone, so no silent native->cli fallback can ever surface.
+    if (
+      value.primary &&
+      typeof value.primary === 'object' &&
+      !Array.isArray(value.primary) &&
+      value.primary.kind === 'native' &&
+      typeof value.primary.model === 'string' &&
+      value.primary.model.trim()
+    ) {
+      const out = { primary: normalizeTierValue(value.primary) };
+      if (value.fallback_policy === 'explicit-only') {
+        out.fallback_policy = 'explicit-only';
+        if (
+          value.fallback &&
+          typeof value.fallback === 'object' &&
+          !Array.isArray(value.fallback) &&
+          value.fallback.kind === 'cli' &&
+          typeof value.fallback.command === 'string' &&
+          value.fallback.command.trim()
+        ) {
+          out.fallback = { kind: 'cli', command: value.fallback.command.trim() };
+        }
+      }
+      return out;
     }
     if (value.kind === undefined && typeof value.model === 'string' && value.model.trim()) {
       const out = { model: value.model.trim() };
@@ -251,6 +309,25 @@ export const UNSAFE_CLI_FLAGS = [
 // has no dependency on normalizeModels' internal constant name).
 const MODEL_VALIDATE_SLOTS = [...CONFIGURABLE_SLOTS, 'advisor'];
 
+// ao-2b-2/AO8 — ADVICE-CLASS slots (advisor, review — every runtime) must
+// run read-only: their output is data consulted by a worker or gate, never
+// code that edits the repo. This is a SECOND, NARROWER blocklist layered on
+// top of UNSAFE_CLI_FLAGS above (which already denies auto-approve flags on
+// every cli slot, generation/extraction included) — the same honest framing
+// applies: a command string free of every token below is not proven
+// read-only, only free of these known write-granting sandbox aliases.
+// 'danger-full-access' is deliberately bare (no leading '-s '/'--sandbox ')
+// so it also catches the '=' spelling and any future flag-name prefix;
+// UNSAFE_CLI_FLAGS' '-s danger-full-access' row still fires alongside it on
+// an advice-class slot — both codes are expected together (B6/B7 + this).
+export const ADVICE_CLASS_SLOTS = ['advisor', 'review'];
+export const ADVICE_CLASS_WRITABLE_TOKENS = [
+  '-s workspace-write',
+  '--sandbox workspace-write',
+  '--sandbox=workspace-write',
+  'danger-full-access',
+];
+
 /**
  * validateModelsConfig (ao-2ai-1) — loudly flags malformed / prompt-less /
  * unsafe cli-tier config that normalizeTierValue today silently reverts to
@@ -276,6 +353,12 @@ const MODEL_VALIDATE_SLOTS = [...CONFIGURABLE_SLOTS, 'advisor'];
  *       (e.g. a trailing "-") for a stdin convention: the config must
  *       DECLARE its transport, never leave it inferred.
  *   (c) a cli `command` containing any UNSAFE_CLI_FLAGS alias (B6/B7).
+ *   (d) an ADVICE-CLASS slot (advisor, review — every runtime; AO8) whose
+ *       `command` contains any ADVICE_CLASS_WRITABLE_TOKENS alias — advice
+ *       slots must run read-only, so a write-granting sandbox mode is
+ *       refused here even when it is not on the universal UNSAFE_CLI_FLAGS
+ *       list. generation/extraction cli slots are NOT advice-class and are
+ *       untouched by this check.
  */
 export function validateModelsConfig(config) {
   const problems = [];
@@ -333,6 +416,86 @@ export function validateModelsConfig(config) {
         });
         continue;
       }
+      // Native V2 model-override shapes (D2, codex-native-transport) — detected
+      // BEFORE looksLikeCli (ADVISOR-R2 Δ1). {kind:'native'} carries a `kind`
+      // key so it would be mis-flagged cli-malformed; the composite carries no
+      // top-level kind/command/model so it would be mis-flagged
+      // model-shape-malformed. Each gets its own reject codes.
+      const isComposite = 'primary' in value || 'fallback' in value || 'fallback_policy' in value;
+      if (isComposite) {
+        const primary = value.primary;
+        const primaryOk =
+          primary &&
+          typeof primary === 'object' &&
+          !Array.isArray(primary) &&
+          primary.kind === 'native' &&
+          typeof primary.model === 'string' &&
+          primary.model.trim().length > 0;
+        if (!primaryOk) {
+          problems.push({
+            code: 'composite-primary-malformed',
+            runtime: rt,
+            slot,
+            message: `models.${rt}.${slot} is a composite (primary/fallback) but its primary is not a valid native override {kind:"native", model} — ignored; today this silently reverts to the seeded default (D2).`,
+          });
+          continue;
+        }
+        if (primary.fork_turns !== undefined && primary.fork_turns !== 'none') {
+          problems.push({
+            code: 'native-fork-turns-unknown',
+            runtime: rt,
+            slot,
+            message: `models.${rt}.${slot} composite primary has fork_turns:${JSON.stringify(primary.fork_turns)} — only "none" is valid; a full-history fork rejects model overrides (E2/D2).`,
+          });
+        }
+        if (value.fallback_policy !== 'explicit-only') {
+          problems.push({
+            code: 'composite-fallback-policy-missing',
+            runtime: rt,
+            slot,
+            message: `models.${rt}.${slot} is a composite but has no fallback_policy:"explicit-only" — its cli fallback is silently dropped and no fallback is ever taken; silent native->cli fallback is forbidden (D1). Set fallback_policy:"explicit-only" to opt in.`,
+          });
+          continue;
+        }
+        const fb = value.fallback;
+        const fbOk =
+          fb &&
+          typeof fb === 'object' &&
+          !Array.isArray(fb) &&
+          fb.kind === 'cli' &&
+          typeof fb.command === 'string' &&
+          fb.command.trim().length > 0;
+        if (!fbOk) {
+          problems.push({
+            code: 'composite-fallback-malformed',
+            runtime: rt,
+            slot,
+            message: `models.${rt}.${slot} composite declares fallback_policy:"explicit-only" but its fallback is not a valid cli executor {kind:"cli", command} — the fallback is silently dropped; fix or remove it (D2).`,
+          });
+        }
+        continue;
+      }
+      if (value.kind === 'native') {
+        const modelOk = typeof value.model === 'string' && value.model.trim().length > 0;
+        if (!modelOk) {
+          problems.push({
+            code: 'native-model-missing',
+            runtime: rt,
+            slot,
+            message: `models.${rt}.${slot} is a native override (kind:"native") but has no non-empty model — the exact catalog model id is required; today this silently reverts to the seeded default (D2).`,
+          });
+          continue;
+        }
+        if (value.fork_turns !== undefined && value.fork_turns !== 'none') {
+          problems.push({
+            code: 'native-fork-turns-unknown',
+            runtime: rt,
+            slot,
+            message: `models.${rt}.${slot} native override has fork_turns:${JSON.stringify(value.fork_turns)} — only "none" is valid; a full-history fork rejects model overrides (E2/D2).`,
+          });
+        }
+        continue;
+      }
       const looksLikeCli = 'kind' in value || 'command' in value;
       if (looksLikeCli) {
         const kindOk = value.kind === 'cli';
@@ -366,6 +529,19 @@ export function validateModelsConfig(config) {
             });
           }
         }
+        if (ADVICE_CLASS_SLOTS.includes(slot)) {
+          for (const token of ADVICE_CLASS_WRITABLE_TOKENS) {
+            if (value.command.includes(token)) {
+              problems.push({
+                code: 'cli-advice-slot-writable',
+                runtime: rt,
+                slot,
+                flag: token,
+                message: `models.${rt}.${slot} is an advice-class cli slot (advisor/review must run read-only, AO8) and its command contains "${token}" — a known write-granting sandbox token; remove it. This is a blocklist of KNOWN write-granting tokens, not a positive read-only guarantee.`,
+              });
+            }
+          }
+        }
         continue;
       }
       if (typeof value.model !== 'string' || !value.model.trim()) {
@@ -376,6 +552,105 @@ export function validateModelsConfig(config) {
           message: `models.${rt}.${slot} is an object but neither a valid cli executor nor a valid {model} shape — ignored; today this silently reverts to the seeded default.`,
         });
       }
+    }
+  }
+  return problems;
+}
+
+// W3 pinned agent files (ao-3b-1) — the tier each rendered .claude/agents/
+// bee-*.md belongs to. "ceiling" is deliberately absent: it has no rendered
+// agent (it IS the session model).
+const AGENT_FILE_TIER = {
+  'bee-gather': 'generation',
+  'bee-extract': 'extraction',
+  'bee-review': 'review',
+};
+
+// Extracts the `model:` value out of an agent file's YAML frontmatter with a
+// plain regex (no YAML parser dependency — the templates only ever emit a
+// flat `key: value` block, ao-3b-1). Never throws: a read failure (missing
+// file, permission) reports {found:false}; a present-but-unparseable file
+// reports {found:true, model:undefined} so the caller can flag it as
+// malformed rather than silently skip it.
+function readAgentFileModel(file) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return { found: false, model: null };
+  }
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
+  const modelLine = frontmatter ? /^model:\s*(.+)$/m.exec(frontmatter[1]) : null;
+  return { found: true, model: modelLine ? modelLine[1].trim() : undefined };
+}
+
+/**
+ * validateAgentFilesDrift (ao-3b-2, AO12) — advisory-only check that each
+ * rendered `.claude/agents/bee-*.md`'s `model:` frontmatter still matches
+ * the model currently configured for its tier. Deliberately a SEPARATE,
+ * root-taking helper: validateModelsConfig above must stay PURE (no root, no
+ * fs — it is read from inside bee-model-guard's fail-open hot path, and a
+ * throw there is swallowed by the hook's catch, a refusal that refuses
+ * nothing). This helper is called only from hosts that already have root
+ * (`bee status`, `bee config validate`) — never from a hook.
+ *
+ * NEVER throws: an absent agent file is clean (nothing rendered yet, or the
+ * tier is cli-shaped/unconfigured and onboarding correctly skipped it —
+ * AO10/AO11); a present file with unparseable frontmatter is reported as its
+ * own problem code, never an exception. Advisory only — this never refuses
+ * anything; the dispatch itself is already protected by the guard's
+ * marker+param equality rule (AO5), independent of this check.
+ *
+ * `rawConfig` is the SAME raw `.bee/config.json` payload validateModelsConfig
+ * takes (the readRawConfigForValidation undefined/null/object contract) —
+ * normalized here through the same normalizeModels() readConfig itself uses,
+ * so the comparison is against the EFFECTIVE model (seeded defaults applied),
+ * never the raw shape, and never a second disk read of config.json.
+ */
+export function validateAgentFilesDrift(root, rawConfig) {
+  const problems = [];
+  const rawModels =
+    rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig.models : undefined;
+  const models = normalizeModels(rawModels);
+  for (const [agentName, slot] of Object.entries(AGENT_FILE_TIER)) {
+    const file = path.join(root, '.claude', 'agents', `${agentName}.md`);
+    const { found, model: fileModel } = readAgentFileModel(file);
+    if (!found) continue; // absent is clean — nothing rendered, or a cli/null slot correctly skipped (AO10/AO11)
+    if (fileModel === undefined) {
+      problems.push({
+        code: 'agent-file-malformed',
+        agent: agentName,
+        slot,
+        message: `.claude/agents/${agentName}.md has no readable "model:" frontmatter line — cannot check drift; re-run onboarding to re-render it.`,
+      });
+      continue;
+    }
+    let value = models.claude ? models.claude[slot] : null;
+    if (value == null && slot === 'review') {
+      value = models.claude ? models.claude.generation : null; // review falls back to generation
+    }
+    let expected = null;
+    if (typeof value === 'string') expected = value;
+    else if (value && typeof value === 'object' && typeof value.model === 'string') expected = value.model;
+    // value.kind === 'cli', or value == null (budget/unconfigured), leaves
+    // expected === null: the slot now names no model at all, so ANY model
+    // string still in the file is drift (the file should be removed at the
+    // next onboarding sync, but that is onboarding's job, not this
+    // advisory's — it still surfaces the mismatch).
+    if (expected === null) {
+      problems.push({
+        code: 'agent-file-drift',
+        agent: agentName,
+        slot,
+        message: `.claude/agents/${agentName}.md declares model: "${fileModel}" but the ${slot} slot is now cli-shaped or unconfigured (no model name) — re-run onboarding to remove the stale file.`,
+      });
+    } else if (expected !== fileModel) {
+      problems.push({
+        code: 'agent-file-drift',
+        agent: agentName,
+        slot,
+        message: `.claude/agents/${agentName}.md declares model: "${fileModel}" but the configured ${slot} model is "${expected}" — re-run onboarding to re-render it.`,
+      });
     }
   }
   return problems;
@@ -1061,8 +1336,14 @@ export function modelForTier(root, tier, runtime = 'claude') {
 }
 
 /**
- * Typed slot resolution (decisions 0019/0021). `slot` is a tier
- * (extraction/generation/ceiling) or the `review` role. Returns one of:
+ * Typed slot resolution (decisions 0019/0021), purpose-scoped (AO12/B1,
+ * plan.md 2A-ii). `slot` is a tier (extraction/generation/ceiling) or the
+ * `review` role. `purpose` is an OPTIONAL 4th param shaped `{for:'gather'|
+ * 'cell'}`, DEFAULT `'cell'` — the fail-safe side: every existing 3-arg
+ * call, a missing/null `purpose`, and ANY malformed/unknown `purpose` value
+ * (a string, a number, an array, `{for:'banana'}`, etc.) all resolve as
+ * cell-execution. Only an explicit `{for:'gather'}` is treated as a
+ * read-only gather. Returns one of:
  *   { type: 'inherit' }                — ceiling: omit the model param, the
  *     worker inherits the session model (decision 0015)
  *   { type: 'model', model, effort? }  — spawn a subagent with this model
@@ -1070,10 +1351,29 @@ export function modelForTier(root, tier, runtime = 'claude') {
  *   { type: 'budget' }                 — no per-agent switch: enforce the tier
  *     as a read budget + output cap in the worker prompt
  *   { type: 'cli', command }           — dispatch an EXTERNAL executor process
- *     (protocol: bee-swarming reference, External Executors section)
- * A null `review` slot falls back to the generation tier (decision 0021).
+ *     (protocol: bee-swarming reference, External Executors section) — ONLY
+ *     when the resolved slot value is cli-shaped AND purpose is explicitly
+ *     `{for:'gather'}`.
+ *   { type: 'refused', reason: 'cli_tier_gather_only', slot, fix } — the
+ *     resolved slot value is cli-shaped but purpose is 'cell' (default,
+ *     explicit, or malformed). This is a RETURNED TYPE, never a throw — a
+ *     cli tier resolving for cell execution is not yet proven safe (Discovery-2:
+ *     an external CLI's cwd is not the repo root, so the execute contract's
+ *     reserve/verify/cap helpers would misfire silently); it stays refused
+ *     until a cell-execution dogfood is green (plan 2A/W9). `modelForTier`
+ *     (bee-model-guard's fail-open hot path, :133) calls resolveTier with no
+ *     purpose and keeps returning `null` for cli exactly as before this
+ *     change — a refused type is not a 'model' type, so its `resolved.type
+ *     === 'model'` check still falls through to null, zero behavior change.
+ * The refusal applies to EVERY slot including 'review' — a bare 3-arg
+ * resolve of a cli-shaped review slot refuses too; the external-reviewer
+ * dispatch stays reachable via `{for:'gather'}` (the routing prose that
+ * teaches callers the 4-arg form moves to 2A-iii). Non-cli slot values
+ * (inherit/model/budget) ignore purpose entirely — byte-identical results
+ * with or without it. A null `review` slot still falls back to the
+ * generation tier (decision 0021) BEFORE the cli/purpose check.
  */
-export function resolveTier(root, slot, runtime = 'claude') {
+export function resolveTier(root, slot, runtime = 'claude', purpose) {
   if (slot === 'ceiling') return { type: 'inherit' };
   const { models } = readConfig(root);
   const rt = RUNTIMES.includes(runtime) ? runtime : 'claude';
@@ -1084,7 +1384,33 @@ export function resolveTier(root, slot, runtime = 'claude') {
   }
   if (value == null) return { type: 'budget' };
   if (typeof value === 'string') return { type: 'model', model: value };
-  if (value.kind === 'cli') return { type: 'cli', command: value.command };
+  if (value.kind === 'cli') {
+    const forGather =
+      purpose != null &&
+      typeof purpose === 'object' &&
+      !Array.isArray(purpose) &&
+      purpose.for === 'gather';
+    if (!forGather) {
+      return {
+        type: 'refused',
+        reason: 'cli_tier_gather_only',
+        slot: s,
+        fix: 'declare {for:"gather"} for a read-only gather; cli cell execution stays refused until a cell-execution dogfood is green (plan 2A/W9)',
+      };
+    }
+    return { type: 'cli', command: value.command };
+  }
+  // Native V2 model-override (D2, codex-native-transport) — inserted BEFORE the
+  // generic value.model branch (plan cnt-1 note) so a native leaf is never
+  // mis-read as a plain {model} shape. normalize guarantees a valid model here.
+  if (value.kind === 'native') return nativeResolved(value);
+  if (value.primary && typeof value.primary === 'object' && !Array.isArray(value.primary)) {
+    const resolved = nativeResolved(value.primary);
+    if (value.fallback_policy === 'explicit-only' && value.fallback && value.fallback.kind === 'cli' && typeof value.fallback.command === 'string') {
+      resolved.fallback = { type: 'cli', command: value.fallback.command };
+    }
+    return resolved;
+  }
   if (typeof value.model === 'string') {
     return value.effort
       ? { type: 'model', model: value.model, effort: value.effort }
@@ -1112,12 +1438,110 @@ export function resolveAdvisor(root, runtime = 'claude') {
   if (value == null) return null; // unset, absent runtime, or explicit null -> no advisor
   if (typeof value === 'string') return { type: 'model', model: value };
   if (value.kind === 'cli') return { type: 'cli', command: value.command };
+  // Native V2 model-override + explicit-fallback composite (D2), inserted BEFORE
+  // the generic value.model branch (plan cnt-1 note). An invalid native shape
+  // is stripped by normalize before it reaches here, so resolveAdvisor never
+  // returns a bogus native — it falls through to null, exactly like a cli slot
+  // missing its command.
+  if (value.kind === 'native') return nativeResolved(value);
+  if (value.primary && typeof value.primary === 'object' && !Array.isArray(value.primary)) {
+    const resolved = nativeResolved(value.primary);
+    if (value.fallback_policy === 'explicit-only' && value.fallback && value.fallback.kind === 'cli' && typeof value.fallback.command === 'string') {
+      resolved.fallback = { type: 'cli', command: value.fallback.command };
+    }
+    return resolved;
+  }
   if (typeof value.model === 'string') {
     return value.effort
       ? { type: 'model', model: value.model, effort: value.effort }
       : { type: 'model', model: value.model };
   }
   return null;
+}
+
+// Shared resolution of a normalized native V2 model-override leaf
+// ({kind:'native', model, effort?, fork_turns?, agent_type?}) into a resolved
+// {type:'native', ...} record (D2). Called by resolveTier and resolveAdvisor;
+// a function declaration so it is hoisted above both. normalize has already
+// trimmed the fields and dropped any invalid ones, so this only applies the
+// resolved defaults: fork_turns:'none' (overrides require it, E2) and
+// agent_type:'worker'.
+function nativeResolved(value) {
+  const out = { type: 'native', model: value.model };
+  if (value.effort != null) out.effort = value.effort;
+  out.fork_turns = value.fork_turns != null ? value.fork_turns : 'none';
+  out.agent_type = value.agent_type != null ? value.agent_type : 'worker';
+  return out;
+}
+
+// ─── advisor_ref staleness anchors + check (AO3/AO13, Slice 4) ──────────────
+// Zero precedent: no gate anywhere checked a precondition before this. The
+// advisor_ref field records that a real advisor consult happened for the
+// SELECTED (default or lane) record; Gate 3 refuses high-risk execution
+// approval when the ref is missing or stale. Staleness is NEVER a TTL — AO13
+// bans invented time numbers. Both helpers are pure reads and never throw on a
+// missing artifact: a missing plan.md hashes to the absent sentinel, so the
+// only failure mode is "stale", never a crash on the gate's hot path.
+
+export const ADVISOR_PLAN_ABSENT_SENTINEL = 'absent';
+
+function advisorPlanPath(root, feature) {
+  return path.join(root, 'docs', 'history', String(feature ?? ''), 'plan.md');
+}
+
+// The verb stamps these itself at record time; the caller never supplies them.
+// `feature` is the SELECTED record's feature (a lane's own feature, not the
+// default record's — checker M1), so the plan.md hashed is THAT feature's plan.
+export function advisorRefAnchors(root, feature) {
+  let newest_decision_id = null;
+  try {
+    const active = activeDecisions(root, { recent: 1 });
+    newest_decision_id = active.length ? active[0].id : null;
+  } catch {
+    newest_decision_id = null;
+  }
+  let plan_sha256 = ADVISOR_PLAN_ABSENT_SENTINEL;
+  try {
+    const planFile = advisorPlanPath(root, feature);
+    if (fs.existsSync(planFile)) {
+      plan_sha256 = crypto.createHash('sha256').update(fs.readFileSync(planFile)).digest('hex');
+    }
+  } catch {
+    plan_sha256 = ADVISOR_PLAN_ABSENT_SENTINEL;
+  }
+  return { feature: feature ?? null, newest_decision_id, plan_sha256 };
+}
+
+// AO13 verbatim: an advisor_ref is stale if ANY of — its feature differs from
+// state.feature; the newest active decision id changed since the consult;
+// sha256(plan.md) changed; or the ref predates the most recent revocation of
+// the execution gate. A malformed/missing ref (non-object, array, or null)
+// reads as missing — stale, never a throw.
+export function advisorRefStale(root, ref, state) {
+  if (!ref || typeof ref !== 'object' || Array.isArray(ref)) {
+    return { stale: true, reasons: ['no advisor_ref recorded'] };
+  }
+  const reasons = [];
+  const feature = state && state.feature != null ? state.feature : null;
+  const anchors = advisorRefAnchors(root, feature);
+  if (ref.feature !== anchors.feature) {
+    reasons.push(`feature changed since the consult (ref "${ref.feature}" ≠ current "${anchors.feature}")`);
+  }
+  if (ref.newest_decision_id !== anchors.newest_decision_id) {
+    reasons.push(
+      `a new decision was logged since the consult (ref "${ref.newest_decision_id}" ≠ current "${anchors.newest_decision_id}")`,
+    );
+  }
+  if (ref.plan_sha256 !== anchors.plan_sha256) {
+    reasons.push('plan.md changed since the consult (sha256 mismatch)');
+  }
+  const revokedAt = state && state.gate_revoked_at ? state.gate_revoked_at.execution : undefined;
+  if (revokedAt && (!ref.consulted_at || String(ref.consulted_at) < String(revokedAt))) {
+    reasons.push(
+      `the consult predates the most recent execution-gate revocation (consulted ${ref.consulted_at ?? 'never'}, revoked ${revokedAt})`,
+    );
+  }
+  return { stale: reasons.length > 0, reasons };
 }
 
 // ─── startFeature: guarded atomic feature start (decision D2, plan.md test ──
@@ -1199,7 +1623,16 @@ function listActiveReservationsForStart(root) {
   });
 }
 
-export function startFeature(
+// D6 — async: the whole precondition-read-through-write body below runs
+// inside withStoreLock('state', ...) so a concurrent startFeature/set/gate/
+// worker/scribing-run CLI invocation can no longer race this function's
+// read-check-write into a lost update. Every caller now awaits it (bee.mjs's
+// handleStateStartFeature; direct unit callers in test_lib.mjs) — this is
+// the same async-ification msh-3 already did for reservations.mjs's
+// reserve/release/sweepExpired. CLI verbs WAIT normally (no maxAttempts
+// override): only the hook-driven heartbeat/lease-renewal touch path
+// (claims.mjs/reservations.mjs) uses try-once mode.
+export async function startFeature(
   root,
   { feature, mode = null, phase = 'exploring', lane = false, sessionId = null, paths = [] } = {},
 ) {
@@ -1213,85 +1646,87 @@ export function startFeature(
     );
   }
 
-  if (lane) {
-    return startLane(root, {
-      feature: requireLaneFeature(feature),
-      mode,
-      phase: phaseValue,
-      sessionId: typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null,
-      paths,
-    });
-  }
+  return withStoreLock(root, 'state', () => {
+    if (lane) {
+      return startLane(root, {
+        feature: requireLaneFeature(feature),
+        mode,
+        phase: phaseValue,
+        sessionId: typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null,
+        paths,
+      });
+    }
 
-  // Re-read immediately before any check (C1) — every read below happens
-  // before the single write at the end, so a refusal leaves zero mutations.
-  const state = readStateStrict(root);
+    // Re-read immediately before any check (C1) — every read below happens
+    // before the single write at the end, so a refusal leaves zero mutations.
+    const state = readStateStrict(root);
 
-  if (state.phase !== 'idle' && state.phase !== 'compounding-complete') {
-    throw new Error(
-      `startFeature: refused — current phase is "${state.phase}", not idle or the terminal alias "compounding-complete". A prior feature must finish or be explicitly wound down before a new feature starts. FIX: resume/close the current feature through its normal chain, or drop its remaining cells (bee.mjs cells drop), then retry.`,
-    );
-  }
-
-  const handoffFile = handoffPath(root);
-  if (fs.existsSync(handoffFile)) {
-    throw new Error(
-      'startFeature: refused — .bee/HANDOFF.json exists. A paused session must resume and clear the handoff before a new feature starts. FIX: resume the session (or explicitly delete HANDOFF.json once its work is truly abandoned), then retry.',
-    );
-  }
-
-  const workers = Array.isArray(state.workers) ? state.workers : [];
-  if (workers.length > 0) {
-    const names = workers.map((w) => (w && w.nickname) || '?').join(', ');
-    throw new Error(
-      `startFeature: refused — ${workers.length} registered worker(s) remain (${names}). FIX: clear them first (bee.mjs state worker remove --nickname N, or worker clear).`,
-    );
-  }
-
-  const activeReservations = listActiveReservationsForStart(root);
-  if (activeReservations.length > 0) {
-    throw new Error(
-      `startFeature: refused — ${activeReservations.length} active reservation(s) remain (${activeReservations
-        .map((r) => `${r.agent}:${r.path}`)
-        .join(', ')}). FIX: release them first (bee.mjs reservations release).`,
-    );
-  }
-
-  const cells = listAllCellsForStart(root);
-  const claimed = cells.filter((cell) => cell.status === 'claimed');
-  if (claimed.length > 0) {
-    throw new Error(
-      `startFeature: refused — claimed cell(s) remain: ${claimed.map((c) => c.id).join(', ')}. FIX: cap or drop them first (bee.mjs cells cap / bee.mjs cells drop).`,
-    );
-  }
-
-  const priorFeature = state.feature;
-  if (priorFeature) {
-    const nonterminal = cells.filter(
-      (cell) =>
-        cell.feature === priorFeature &&
-        (cell.status === 'open' || cell.status === 'claimed' || cell.status === 'blocked'),
-    );
-    if (nonterminal.length > 0) {
+    if (state.phase !== 'idle' && state.phase !== 'compounding-complete') {
       throw new Error(
-        `startFeature: refused — prior feature "${priorFeature}" has nonterminal cell(s): ${nonterminal
-          .map((c) => `${c.id}(${c.status})`)
-          .join(', ')}. An abandoned cell must first be resolved through the existing drop verb (bee.mjs cells drop --id ID --reason R) — startFeature never auto-clears cells as cleanup. FIX: cap or drop each listed cell, then retry.`,
+        `startFeature: refused — current phase is "${state.phase}", not idle or the terminal alias "compounding-complete". A prior feature must finish or be explicitly wound down before a new feature starts. FIX: resume/close the current feature through its normal chain, or drop its remaining cells (bee.mjs cells drop), then retry.`,
       );
     }
-  }
 
-  // All preconditions hold — ONE atomic write: feature/mode/phase, reset all
-  // four gates, refreshed summary/next_action. A new feature never inherits
-  // approvals from whatever came before it.
-  state.feature = feature.trim();
-  state.mode = mode == null ? null : String(mode);
-  state.phase = phaseValue;
-  state.approved_gates = { context: false, shape: false, execution: false, review: false };
-  state.summary = `Feature "${state.feature}" started at phase "${phaseValue}".`;
-  state.next_action = `Invoke bee-hive for "${state.feature}" (phase: ${phaseValue}).`;
-  writeState(root, state);
-  return state;
+    const handoffFile = handoffPath(root);
+    if (fs.existsSync(handoffFile)) {
+      throw new Error(
+        'startFeature: refused — .bee/HANDOFF.json exists. A paused session must resume and clear the handoff before a new feature starts. FIX: resume the session (or explicitly delete HANDOFF.json once its work is truly abandoned), then retry.',
+      );
+    }
+
+    const workers = Array.isArray(state.workers) ? state.workers : [];
+    if (workers.length > 0) {
+      const names = workers.map((w) => (w && w.nickname) || '?').join(', ');
+      throw new Error(
+        `startFeature: refused — ${workers.length} registered worker(s) remain (${names}). FIX: clear them first (bee.mjs state worker remove --nickname N, or worker clear).`,
+      );
+    }
+
+    const activeReservations = listActiveReservationsForStart(root);
+    if (activeReservations.length > 0) {
+      throw new Error(
+        `startFeature: refused — ${activeReservations.length} active reservation(s) remain (${activeReservations
+          .map((r) => `${r.agent}:${r.path}`)
+          .join(', ')}). FIX: release them first (bee.mjs reservations release).`,
+      );
+    }
+
+    const cells = listAllCellsForStart(root);
+    const claimed = cells.filter((cell) => cell.status === 'claimed');
+    if (claimed.length > 0) {
+      throw new Error(
+        `startFeature: refused — claimed cell(s) remain: ${claimed.map((c) => c.id).join(', ')}. FIX: cap or drop them first (bee.mjs cells cap / bee.mjs cells drop).`,
+      );
+    }
+
+    const priorFeature = state.feature;
+    if (priorFeature) {
+      const nonterminal = cells.filter(
+        (cell) =>
+          cell.feature === priorFeature &&
+          (cell.status === 'open' || cell.status === 'claimed' || cell.status === 'blocked'),
+      );
+      if (nonterminal.length > 0) {
+        throw new Error(
+          `startFeature: refused — prior feature "${priorFeature}" has nonterminal cell(s): ${nonterminal
+            .map((c) => `${c.id}(${c.status})`)
+            .join(', ')}. An abandoned cell must first be resolved through the existing drop verb (bee.mjs cells drop --id ID --reason R) — startFeature never auto-clears cells as cleanup. FIX: cap or drop each listed cell, then retry.`,
+        );
+      }
+    }
+
+    // All preconditions hold — ONE atomic write: feature/mode/phase, reset all
+    // four gates, refreshed summary/next_action. A new feature never inherits
+    // approvals from whatever came before it.
+    state.feature = feature.trim();
+    state.mode = mode == null ? null : String(mode);
+    state.phase = phaseValue;
+    state.approved_gates = { context: false, shape: false, execution: false, review: false };
+    state.summary = `Feature "${state.feature}" started at phase "${phaseValue}".`;
+    state.next_action = `Invoke bee-hive for "${state.feature}" (phase: ${phaseValue}).`;
+    writeState(root, state);
+    return state;
+  });
 }
 
 // Active claim holds by ANOTHER session whose claimed cell's files overlap the

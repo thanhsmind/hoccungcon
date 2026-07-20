@@ -36,7 +36,7 @@ Open `references/worker-details.md` only for expanded commands, trace tiers, fri
 - Require exactly **one** assigned cell id from the parent. Never choose work yourself — do not browse `ready` or `list` for candidates.
 - No assigned cell id, or the cell is missing/already capped → return `[NOOP]`.
 - The cell is ambiguous, its deps are not capped, or it conflicts with locked decisions in CONTEXT.md → return `[BLOCKED]`. Never reinterpret a locked decision to make the cell fit.
-- Claim it: `node .bee/bin/bee.mjs cells claim --id <id> --worker "<name>"`
+- **Validate, never claim (D1):** the orchestrator already claimed this cell (`cells claim --id` or `claim-next`) before spawning you. Confirm it: `node .bee/bin/bee.mjs cells show --id <id>` must show `status: "claimed"` with `trace.worker` matching your nickname. A worker never runs `cells claim` itself — anything else (open, claimed by a different worker, missing, capped) is not yours to touch → return `[BLOCKED]` (or `[NOOP]` per the rule above), never claim it yourself to make the cell fit.
 
 ## 3. Reserve
 
@@ -73,7 +73,7 @@ Package installs **always** checkpoint: stop and return `[BLOCKED]` with the pac
 
 D1 amends the two-attempts rule above with a worker-level, on-failure-only step. This is **not** a gate-time or orchestrator-level consult — de967733 ("Bee runs ONE cost pattern") stays amended, not reversed: fan-out orchestration remains the default for every phase, and the human gates are untouched.
 
-**Trigger** — consult only when both are true: the dispatch prompt carries an `Advisor` line (the orchestrator already ran the degenerate check per D2/decision 0016 before adding one — the worker never self-assesses this), and the worker has just hit its **first serious failed verify attempt**. No `Advisor` line → proceed exactly as the unchanged rule in Verify.
+**Trigger** — consult only when both are true: the dispatch prompt carries an `Advisor` line (the orchestrator already ran the same-model no-op check per AO4/AO5 before adding one — the worker never self-assesses this), and the worker has just hit its **first serious failed verify attempt**. No `Advisor` line → proceed exactly as the unchanged rule in Verify.
 
 **Canonical loop (D3), max 2 consults per claim:**
 
@@ -88,7 +88,7 @@ A re-dispatched cell (rescue rung) starts a **fresh** budget — the 2-consult c
 **Evidence bundle (mandatory, every consult):** exact failing command, the failing output, your diagnosis, the relevant cited file excerpts, and the `CONTEXT.md` path. Pass it **inline in the consult prompt or via stdin — never a `/tmp` path** (critical pattern 20260708). Never include secrets or env values.
 
 **Transport** — the `Advisor` line names the advisor and how to consult it:
-- **Model-shaped advisor:** consult via your own Agent tool, with the model param set to the named advisor model, and the dispatch `description` starting **exactly** `advisor-consult <cell-id>: <advisor-model>` — this is the A2 attribution record; bee-swarming's goal-check reads it from `.bee/logs/dispatch.jsonl`. Fallback if Agent dispatch is unavailable or rejected: a headless one-shot `claude -p --model <advisor-model>` call, same evidence bundle via stdin.
+- **Model-shaped advisor:** consult via Codex-native subagent dispatch at the named advisor model, recording the same `advisor-consult <cell-id>: <advisor-model>` attribution that bee-swarming's goal-check reads from `.bee/logs/dispatch.jsonl`. The transport stays runtime-native (D10): a model-shaped transport that is unavailable or rejected surfaces in the Consults section (spending at most one budget slot, per the transport-error rule below) — never a silent fallback to a cross-vendor CLI, unless the advisor slot itself is configured as that CLI (a cli-shaped advisor, next).
 - **cli-shaped advisor:** run the given command with the evidence bundle on stdin, reusing the External Executors output-capture discipline.
 - A **transport error** (non-zero exit, rejected dispatch, a hang past the External Executors timeout discipline) is **not advice** — it burns at most **one** budget slot total for the whole claim, and is never retried in a storm. Continue to the next step of the loop, or `[BLOCKED]` once the budget is spent.
 

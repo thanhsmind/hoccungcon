@@ -1,46 +1,68 @@
 {
   "schema_version": "1.0",
-  "bee_version": "1.3.12",
+  "bee_version": "1.7.3",
   "managed": {
-    "agents_block": "c3b9ccfa37fe058f3cfe1096f667b55d164194e7d84d4591543aa5631985a9da",
-    "gitignore_block": "b39fe93c0e919a6bc424f80fcc4a9f791579fbc75bb11956f0cb037848f6a0b8",
+    "agents_block": "84d1532386c14df08ad5483efd9b76b835e12567381a7005cfdfaa09f590df49",
+    "gitignore_block": "12a9e9d365c2e2b05dba2efd6310a92308881814b800b9562a09753534bbf75e",
     "helpers": {
-      "bee.mjs": "863a6274f596e0eaef47e74a8d87a554cd3870289a1b42f842f47f099f22e02f"
+      "bee.mjs": "0eedc3e3c4087b7664dd2d090fedea6d77d1d390b979d440e6b4860f5ecdec6d"
     },
     "lib": {
       "backlog.mjs": "9e5b852c7b72fdb1d5d2f530e32cdc63a8271a83dba09d6407b30900d58990cd",
       "capture.mjs": "6ce4fa5947a015f156468aa5bc40e264a9d7a170744e8700de1d90b969b3908c",
-      "cells.mjs": "2220296d969adeaf524c4758bfc054cf17c0db823ac9d460f2ee9fbe60ea3921",
-      "claims.mjs": "53db159edf5e84ee78774c6f5141b7a2a355c31451920da60d6fb9fb02a13d52",
-      "command-registry.mjs": "b88456084447a20c28e6813ba7f880bef694365ecf539db564cea908d016b683",
+      "cells.mjs": "78c06d63483bcd39f3a12f871a594cd978255269ce7180b50c7f75a87f8c9bd5",
+      "claims.mjs": "a796cb3ec0b40ccb150080f24173165b3d2229b3e1d5ec8f2b221e74c17cde30",
+      "command-registry.mjs": "631a69b9ab1fc6e8be3a271501e8de1bc22775c1132fa3c92e015a5cb3d91c88",
       "commands_detect.mjs": "4724f404ef220c662bbda670e6393ae0a01cdbecc0beed6e12ad716b4f684acb",
       "decisions.mjs": "5a208729f5bd98c5f60711e33ad288cc9cfb46b3a0e7d96062f7f6673ff018a3",
+      "dispatch-guard.mjs": "cb5502790c01720a3ece0d4870b44670cb3c6f68027d91503c343699965d5e37",
+      "dispatch-prepare.mjs": "5eb691b2c3311373df3ce6610c5fe1e5eb6de31b4d82c3812ea1cc6e062b8e12",
       "feedback.mjs": "815ecd92215e50fa91067a2069b7cf948aa53e973009107de5ec6af512c00261",
-      "fsutil.mjs": "c73ef7c226729d26b934865c83189bc32e05da0f9345d8c1ba08c3ded5e44647",
-      "guards.mjs": "9f9b294ca20dda9e201a5a8fcc0da2a214bcdc544c311d19b68aaee99f4717c9",
+      "fsutil.mjs": "d3c90d70f48bf3a4fde33fff164248b3813103bad175a9c9a5c545b13374773e",
+      "guards.mjs": "e3c56b9e1669a10c48685efaae045b2c0f4d4d292ce8cdf19cdfeacfe6663aef",
       "inject.mjs": "f788e09556da85d04967f55119a21124e15f50fce3eb7747332a21d809921be0",
+      "judge.mjs": "22495d3e13cc38c1c2b02ef2c78274887f9b1788408bf0ca21b72dced13a124e",
+      "lock.mjs": "c358825fdfad663dd149fc8397cf97af6efb804ac0e1bdb6a401c8e74a78e910",
       "perf.mjs": "b3e64c2f2c8889751196662351d4b4acb0f22f6e58ad0c243fffce40b07754dd",
-      "reservations.mjs": "4643ef572599f1439504741499f3ec982c4344e1e3551052c2d27e66617fec86",
+      "reservations.mjs": "6d5160728e48f87205237cb52b83ccd0f7d406f3dd5d409e3131091a4354f36c",
       "reviews.mjs": "6008cb1de50fb223c84638abaa4bdcd2521743c858ffd3e6b95bbcc6cce97502",
       "schedule.mjs": "9f46b580f71f6be9e38740124d3e7745af972c37fad91ce99433f405eae16351",
-      "source-identity.mjs": "93c2f9669f0103af26c48bd723873bf1bebc4d3fe2d8f51013f4be529095c81b",
-      "state.mjs": "ded7800ebbd63bae4fd0e6692df5d86eedb2cf941f144364f066872ad03c5844",
+      "source-identity.mjs": "716740641e1f6bfbb5ccc5b4fe7827f1165c2a1f1127ee3800f52a47ac09fc7a",
+      "state.mjs": "ed2c13d75ba113d7228950e12d0dad0117a5a1d79972db98425049b52620860f",
       "validate-args.mjs": "bcdb59f528ec56b3290ee75bf63d7bb018cb22ec5d1381e85a5d2c0cf3b1dd23",
-      "worktree-store.mjs": "9b7370e16a317f156a868d9311371b7497cb25603e51e13856af5f47bfabbd18"
+      "worktree-store.mjs": "b2621d5e0dd003fbf87d8f785ea6998f62a7826d275a16fd85ed188a71f0824a"
     },
     "repo_hooks": {
-      "adapter.mjs": "e71be1d018da1c268711a1786ae7e3c1e607316b83dd3f740a824d13bd4d73fa",
+      "adapter.mjs": "773afef754c385a0a570cdfce6f4545f256bfc904c412b784561a10a3f05ba5f",
       "bee-codex-subagent-audit.mjs": "f9f6900705aa20dfc0035a8c8c5c4b22fc56c9d0a4953e1b0ba3fd9466dec85e",
       "bee-session-init.mjs": "3bc1706a7d716017fac407898f06405239d2fefbd98639c581460a4d3a0be4e6",
-      "bee-prompt-context.mjs": "4a50dfeae57f70b95d9e7020df2deac5d980b09e059d0aae5a64dc2c1c338ca6",
-      "bee-write-guard.mjs": "052da327c899bb42db1da500863f210d3c8a1e1ebe76fb0a0988215a2a170028",
-      "bee-state-sync.mjs": "2a0748bbd02884dbca87a494b825b350e0fcf149bb12a83c638a248d8619cbc4",
+      "bee-prompt-context.mjs": "3c28aa777c7a392f4514d0a9dcd78fc795d7e63b5497ed2619bc224385b9fd8c",
+      "bee-write-guard.mjs": "13ed59ddca24fbf26aad431c982c276a2f95d302af85cf5949ab23c7b8e17a33",
+      "bee-state-sync.mjs": "7ccd67e7487fccce7f39a088fd51068425f41a008f17d38caa033ff0478d19ff",
       "bee-chain-nudge.mjs": "0520c71fad2513d93666ad4c3353b7196faeeac382430b1e1395fabd0febd9cb",
-      "bee-session-close.mjs": "4a9611d0ba8fa6a71778426759aae164cc8c8034e03cf72750cb1aa3f39f721b",
-      "bee-model-guard.mjs": "229d7abe02ddb71a26a45df2b3f1173797d4348e264d903e52b8e3c95eab075d",
-      ".codex/hooks.json": "d743270acab78d3f87009e19e3f9303f5d6d5a71dc9a022f4d62c91e182c1bf3"
+      "bee-session-close.mjs": "201073ddce795525ee6ec7bab0297f4adef01830bac8935b528b694e03dea2e6",
+      "bee-model-guard.mjs": "07c22de49b17c6d349bc2ae94ad35721471fd1437a49cdc0feaad3b2d061e829",
+      "bee-tools-logger.mjs": "668634222153c37d858bd5cb8ac5183507bc0da643ef78929219dcf810a39224",
+      ".codex/hooks.json": "6f2f2610cbb249dc9dd340c6b945218b5f3f39474f5323ad1a47fd5015aaf047"
+    }
+  },
+  "agents_sync": {
+    "bee_version": "1.7.3",
+    "files": [
+      ".claude/agents/bee-extract.md",
+      ".claude/agents/bee-gather.md",
+      ".claude/agents/bee-review.md"
+    ],
+    "rendered_from": {
+      "extraction": "haiku",
+      "generation": "sonnet",
+      "review": "opus"
+    },
+    "codex": {
+      "agents": [],
+      "note": "Codex has no per-agent model selection (DEFAULT_MODELS.codex is all-null by design, templates/lib/state.mjs) - tiers are enforced as a read budget + output cap in the worker prompt instead. No agent files are rendered under .agents/ (AO11)."
     }
   },
   "created_at": "2026-07-07T17:01:35.104Z",
-  "updated_at": "2026-07-17T08:51:45.775Z"
+  "updated_at": "2026-07-20T05:17:35.392Z"
 }

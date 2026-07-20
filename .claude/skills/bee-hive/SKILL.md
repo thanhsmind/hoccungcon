@@ -28,7 +28,7 @@ For the full routing table, state bootstrap, resume logic, chaining contracts, a
    ```
 3. Inspect the result:
    - `status: "up_to_date"` → continue.
-   - `status: "changes_needed"` → summarize the plan to the user, ask for approval, and only then re-run with `--apply`. Never apply silently. Never replace an existing compact prompt or AGENTS.md content outside the BEE markers without explicit consent. Every `--apply` also syncs the bee skill set into the host repo's two managed roots (`<repo>/.claude/skills/bee-*` for Claude Code, `<repo>/.agents/skills/bee-*` for Codex) in the same run — one command keeps vendored helpers and installed skills at the same version. The trees are committed to the host repo, never gitignored. `--global-skills` additionally syncs the legacy global `~/.claude/skills/bee-*` root; without the flag the global root is never read, written, or deleted. The payload's `skills.targets` carries one entry per target root: `{kind: "repo-claude" | "repo-agents" | "global", target_root, mode, blocked, versions, items}`. When the repo being onboarded contains the running script's own skill tree (bee's own repo), the per-project targets are skipped as a distinct noop (`mode: "self_skip"`) — global sync there is unchanged.
+   - `status: "changes_needed"` → summarize the plan to the user, ask for approval, and only then re-run with `--apply`. Never apply silently. Never replace an existing compact prompt or AGENTS.md content outside the BEE markers without explicit consent. Every `--apply` also syncs the bee skill set into the host repo's two managed roots (`<repo>/.claude/skills/bee-*` for Claude Code, `<repo>/.agents/skills/bee-*` for Codex) in the same run — one command keeps vendored helpers and installed skills at the same version. The trees are committed to the host repo, never gitignored. `--global-skills` additionally syncs the legacy global `~/.claude/skills/bee-*` root; without the flag the global root is never read, written, or deleted. The payload's `skills.targets` carries one entry per target root: `{kind: "repo-claude" | "repo-agents" | "global", target_root, mode, blocked, versions, items}`. When the repo being onboarded contains the running script's own skill tree (bee's own repo), the per-project targets sync through the ordinary `applySyncSkill` path (mode `sync`/`fresh`/`noop`) like every other managed target; only the exact source-equals-target root is a `noop`. Each managed root is rendered per runtime (Claude vs Codex) and stamped with a render provenance marker, so a rendered projection is never accepted back as an onboarding source. Global sync there is unchanged.
    - `status: "blocked_downgrade"` → the source tree is older than the repo's vendored helpers or a target's installed skills (or a version could not be read — reported as `unknown`, refused the same way). The three-version preflight runs per target; ANY blocked target blocks the whole run (blocked-first), zero mutations happen anywhere, and the top-level `reason`/`versions` surface the blocked target(s). Surface the reported `versions` to the user; only pass `--force-downgrade` on explicit user instruction, and only when every blocked target resolved all three versions numeric — an `unknown` version is never forceable.
    - `status: "blocked_no_source"` → no authoritative skill source resolved for this run (identity check failed, or source/target/repo roots overlap). Fail-closed, zero mutations, never forceable with `--force-downgrade` — surface it to the user and resolve the source location before retrying. `versions` is still reported on every blocked return (identity/overlap included), with `unknown` for each of the three (resolution was never attempted) — never `null`.
    - **Forced-apply transparency (D2):** whenever a blocked result is forceable, both the plain `--json` dry-run and a refused `--apply` (no `--force-downgrade` yet) carry every target's computed `items` inside `skills.targets` — the full per-target list of `sync_skill`/`remove_skill`/`blocked_*` items a `--force-downgrade` would apply. Show this list to the user BEFORE they authorize the force — it is exactly which skills get overwritten or DELETED, per target; a forced apply then executes precisely that reviewed set.
@@ -66,6 +66,8 @@ Then read `docs/history/learnings/critical-patterns.md` and surface recent activ
 
 **Delegation:** onboarding/version scans and any multi-file skill-inventory diff dispatch down-tier as I/O workers per the Delegation contract (`references/routing-and-contracts.md`) when the D2 rubric fires; routing, mode gate, and gate decisions always stay on the session model.
 
+**Worktree routing (D9):** if the scout is about to start NEW feature work in a checkout that already has another live session's active work — a live cross-session heartbeat plus a non-idle phase in the shared store (decision D9a), or active holds / live-owner lanes — the paved road is `bee worktree new --feature <slug>`, then opening the next session in the printed path. Docs-lane work, tiny fixes, and release machinery stay in the MAIN checkout — release always runs in main. Merge-back happens from main via `bee worktree merge --id <id>`; the merge is staged uncommitted (`git merge --no-ff --no-commit`) and the configured verify runs against that staged tree as the semantic-conflict gate before any commit exists — a red verify after a textually clean merge is the alarm to investigate, and it aborts the stage, leaving main byte-untouched, not a signal to roll back a commit (none was ever made).
+
 ## Routing
 
 | Request | Route |
@@ -93,28 +95,32 @@ When in doubt, invoke `bee-exploring` first.
 
 Classification is **mechanical**. Count these risk flags:
 
-> auth · authorization · data model · audit/security · external systems · public contracts · cross-platform · existing covered behavior · weak proof around the area · multi-domain
+> auth · authorization · data model · audit/security · external systems · public contracts · cross-platform · changes behavior an existing test asserts (a covered contract must change) · the change requires weakening, deleting, or replacing existing proof · multi-domain
+
+The last two flags are narrowed (D7): a covered bugfix that keeps existing tests green and adds a new one scores **0** on both.
 
 | Mode | Trigger |
 |---|---|
 | `docs` | every touched file is knowledge, not runtime: `docs/`, specs, README, sample/example configs, plans — nothing executes it |
-| `tiny` | 0–1 flags, ≤2 files, no API/data change, one direct task |
+| `tiny` | 0–1 flags, ≤2 product files, no API/data change, one direct task |
 | `spike` | one yes/no proof decides whether the plan is real |
-| `small` | 0–1 flags, ≤three files, no gray areas |
+| `small` | 0–1 flags, ≤three product files, no gray areas |
 | `standard` | 2–3 flags, or story-sized behavior |
 | `high-risk` | 4+ flags **or any hard-gate flag** (auth, authorization, data loss, audit/security, external provider, validation removal) |
+
+**Lane file caps count product files only (D6)** — production source, tests, and runtime config the behavior change itself must touch. Never counted: `.bee/**`, `docs/**` (history, specs, backlog), plans/briefs/reports, and generated projections/manifests (plugin renders, release manifest).
 
 Use the least workflow that honestly protects the work. A tiny fix wearing epic ceremony is a red flag; a hard-gate change routed as `small` is a worse one.
 
 **Ceremony scales with the lane (lanes scale ceremony, never memory):**
 
-Review is on demand (SPEC R1/R3/R8, decision 565e68d0): no lane auto-dispatches a reviewer wave or asks Gate 4 after execution. Every lane below closes through scribing/compounding as `unreviewed`; a review session — and its Gate 4 — happens only when the user asks, over whatever scope they choose.
+Review is on demand (SPEC R1/R3/R8, decision 565e68d0): no lane auto-dispatches a reviewer wave or asks Gate 4 after execution. Every lane below closes through scribing/compounding as `unreviewed`; a review session — and its Gate 4 — happens only when the user asks, over whatever scope they choose. Separately, `standard`/`high-risk` goal-checks also run a semantic checklist judge per capped `behavior_change` cell (D4, table in `references/routing-and-contracts.md`) — that is verification of the cell, not this on-demand review session.
 
 | Lane | Plan | Validate | Execute | Review | Human stops |
 |---|---|---|---|---|---|
 | `docs` | none — announce one line | format check (parse/lint if applicable) | direct, in-session | none | 0 |
-| `tiny` | short `plan.md` direct note | 2-minute reality check inline, 0 ceremony subagents (I/O-offload workers exempt — Delegation contract) | direct, in-session (solo) | self-review + done-report (diff + fresh verify output) — unchanged, this is verification, not independent review | 1 — the merged shape+execution gate |
-| `small` | short `plan.md` | inline reality gate + matrix, 0 ceremony subagents (I/O-offload workers exempt — Delegation contract); spike only if a blocking assumption demands it | direct, in-session (solo) | self-checks only, no auto reviewer (the correctness reviewer moves inside an on-demand review session) | 2 — merged shape+execution gate, self-checks close-out |
+| `tiny` | none — the cell is the micro-plan (D3) | 2-minute reality check inline, 0 ceremony subagents (I/O-offload workers exempt — Delegation contract) | one dispatched execution worker (AO14 — param-carrying dispatch, model param or pinned type, never a bare marker; standard worker prompt template, no reviewers/panels/waves) | orchestrator-authored done-report (worker's verbatim diff + orchestrator's own fresh verify re-run) — unchanged, this is verification, not independent review | 1 — the merged shape+execution gate |
+| `small` | logged scoping synthesis; plan.md is opt-in (D4) | inline reality gate + matrix, 0 ceremony subagents (I/O-offload workers exempt — Delegation contract); spike only if a blocking assumption demands it | one dispatched execution worker (AO14 — same contract as `tiny`'s Execute column) | orchestrator-authored done-report, self-checks only, no auto reviewer (the correctness reviewer moves inside an on-demand review session) | 2 — merged shape+execution gate, self-checks close-out |
 | `standard` | full `plan.md` | plan-checker + cell reviewer | swarm workers | on user request only: session panel scaled to scope risk (4 core reviewers) | 3 — Gates 1-3 |
 | `high-risk` | `plan.md` + brief | persona panel | swarm workers | on user request only: session panel scaled to scope risk (full wave + conditionals) | 3 — Gates 1-3 |
 
@@ -122,7 +128,7 @@ Review is on demand (SPEC R1/R3/R8, decision 565e68d0): no lane auto-dispatches 
 
 **Docs lane:** the change is knowledge upkeep, same class as capture — announce one line ("docs lane: writing X"), write it, run a format check when one exists (JSON parses, markdown lints), log a decision/capture stub when the content encodes a settled outcome. No cells, no gates, no reviewers. If the target path is outside the write-guard allowlist (`.bee/, docs/, plans/, AGENTS.md`) the hook will block the idle write — fall back to the tiny fast path instead of fighting the guard.
 
-**Tiny fast path:** Gates 2 and 3 are presented as **one merged question** — "Work shape + execution: I'm about to do X via Y, verified by Z. Approve?" — approval records both `shape` and `execution`. The 2-minute reality check runs inline before that question (validating folds into planning; it does not disappear). After the work: no separate merge gate — the done-report (diff + fresh verify output + capture line) closes it. A real problem found during self-review stops and asks, always.
+**Tiny/small fast path (D5):** the draft cell(s) are rendered as a **preview inside the gate message** — never persisted first — and the 2-minute reality check runs inline against that preview, before Gates 2 and 3 are presented as **one merged question** — "Work shape + execution: I'm about to do X via Y, verified by Z. Approve?" — approval records both `shape` and `execution` and covers exactly the previewed work packet. `cells add` runs only **after** approval, and the cells are claimed only then — previewed before persist, never persist-then-preview. Implementation itself runs through the one dispatched execution worker named in the Execute column above (AO14) — never in-session. After the worker returns: no separate merge gate — the orchestrator authors the done-report itself (the worker's verbatim diff plus the orchestrator's own independent verify re-run, never the worker's word) and that done-report (diff + fresh verify output + capture line) closes it. A real problem found during the orchestrator's own review stops and asks, always.
 
 ## The Four Gates
 
@@ -133,7 +139,7 @@ Never skipped, never batched, never self-approved — including go mode and head
 - **Gate 3:** "Feasibility validated. Approve execution?"
 - **Gate 4:** P1 > 0 → "P1 findings block merge. Fix before proceeding?" ; P1 = 0 → "Review complete. Approve merge?"
 
-**Gate 4 lives only inside a user-invoked review session (SPEC R8, decision 565e68d0).** It is asked when the user has explicitly called for independent review over a scope, never automatically after any lane's execution completes and never after an unreviewed feature close. Gate bypass never *creates* a review session at any level. Under `normal`/`full`, even inside a running session Gate 4's UAT items and any P1 always stop for the human; only `total` auto-proceeds on them (the human chose zero stops).
+**Gate 4 lives only inside a user-invoked review session (SPEC R8, decision 565e68d0).** It is asked when the user has explicitly called for independent review over a scope, never automatically after any lane's execution completes and never after an unreviewed feature close. Gate bypass never *creates* a review session at any level. Under `normal`/`full`, even inside a running session Gate 4's UAT items and any P1 always stop for the human; only `total` auto-proceeds on them (the human chose zero stops). The goal-check semantic judge (D4, `references/routing-and-contracts.md`) is a distinct, earlier verification step — it never substitutes for, and never triggers, this gate.
 
 Lane exceptions (Modes and Lanes table): `docs` lane has no gates; `tiny` and `small` merge Gates 2+3 into one shape+execution question. Gates 1-3 are otherwise unchanged and asked one at a time; Gate 4 is never part of a lane's default chain for any lane, `tiny` through `high-risk` — it exists only inside an on-demand review session.
 

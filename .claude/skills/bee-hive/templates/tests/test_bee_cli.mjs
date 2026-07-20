@@ -25,7 +25,7 @@ import { runModuleWorker } from '../../../../scripts/lib/run-module-worker.mjs';
 import { SCHEMA_VERSION, COMMAND_REGISTRY } from '../lib/command-registry.mjs';
 import { validate, isValidParameterSchema } from '../lib/validate-args.mjs';
 import { addCell } from '../lib/cells.mjs';
-import { writeJsonAtomic } from '../lib/fsutil.mjs';
+import { writeJsonAtomic, hashFile } from '../lib/fsutil.mjs';
 import { defaultState, writeState, BEE_VERSION } from '../lib/state.mjs';
 import {
   splitCommandTokens,
@@ -34,6 +34,8 @@ import {
   nearestCommandName,
   deprecatedRedirect,
   computeManifestHash,
+  manifestLintWarning,
+  judgeStandardWarning,
 } from '../bee.mjs';
 
 const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -173,7 +175,7 @@ await check('registry names are unique and dot-namespaced by group (status, cell
   assert(new Set(names).size === names.length, `duplicate names in registry: ${names.join(', ')}`);
   const groups = new Set(names.map((n) => (n.includes('.') ? n.split('.')[0] : n)));
   for (const group of groups) {
-    assert(['status', 'cells', 'reservations', 'decisions', 'state', 'backlog', 'capture', 'reviews', 'feedback', 'perf', 'worktree', 'config'].includes(group), `unexpected group "${group}"`);
+    assert(['status', 'doctor', 'cells', 'reservations', 'decisions', 'state', 'backlog', 'capture', 'reviews', 'feedback', 'perf', 'worktree', 'config', 'dispatch'].includes(group), `unexpected group "${group}"`);
   }
 });
 
@@ -204,7 +206,7 @@ await check('registry covers every subcommand of the 4 existing helpers', async 
 // prepended, exactly what each shim used to do internally, so the observed
 // "Unknown command" contract line is unchanged.
 
-const GROUP_NAMES = ['cells', 'reservations', 'decisions', 'state', 'backlog', 'capture', 'reviews', 'feedback', 'perf', 'worktree'];
+const GROUP_NAMES = ['cells', 'reservations', 'decisions', 'state', 'backlog', 'capture', 'reviews', 'feedback', 'perf', 'worktree', 'dispatch'];
 
 // Parse ONLY the stderr line that starts with "Unknown command" (trap t2:
 // bee.mjs's own `cells update` verb separately emits an unrelated
@@ -275,13 +277,14 @@ await check('DA5 bijection: every runtime verb of bee.mjs cells/reservations/dec
   }
 });
 
-await check('DA5 bijection: the only dot-free registry entry is "status", and every entry\'s group is one of status|cells|reservations|decisions|state|backlog|capture|reviews|feedback|perf|worktree|config', async () => {
-  const allowedGroups = new Set(['status', 'cells', 'reservations', 'decisions', 'state', 'backlog', 'capture', 'reviews', 'feedback', 'perf', 'worktree', 'config']);
+await check('DA5 bijection: the only dot-free registry entries are "status" and "doctor", and every entry\'s group is one of status|doctor|cells|reservations|decisions|state|backlog|capture|reviews|feedback|perf|worktree|config', async () => {
+  const allowedGroups = new Set(['status', 'doctor', 'cells', 'reservations', 'decisions', 'state', 'backlog', 'capture', 'reviews', 'feedback', 'perf', 'worktree', 'config', 'dispatch']);
+  const allowedDotFree = new Set(['status', 'doctor']);
   for (const entry of COMMAND_REGISTRY) {
     const group = entry.name.includes('.') ? entry.name.split('.')[0] : entry.name;
-    assert(allowedGroups.has(group), `${entry.name}: group "${group}" is not one of status|cells|reservations|decisions|state|backlog|capture|reviews|feedback|perf|worktree|config`);
+    assert(allowedGroups.has(group), `${entry.name}: group "${group}" is not one of status|doctor|cells|reservations|decisions|state|backlog|capture|reviews|feedback|perf|worktree|config|dispatch`);
     if (!entry.name.includes('.')) {
-      assert(entry.name === 'status', `dot-free registry entry "${entry.name}" is not "status" — only "status" may be dot-free`);
+      assert(allowedDotFree.has(entry.name), `dot-free registry entry "${entry.name}" is not one of status|doctor — only those may be dot-free`);
     }
   }
 });
@@ -485,6 +488,81 @@ await check('cells.unclaim example runs through the real dispatcher (claimed -> 
   const cell = JSON.parse(result.stdout);
   assert(cell.status === 'open', `demo-1 should be open after unclaim, got ${cell.status}`);
   assert(!cell.trace.worker, 'unclaim must release the worker');
+});
+
+// D2 + GH #27.4 (D-GHF-C): cells.reset-budget's registry example now runs
+// against a deliberately budget-blocked demo-1 — resetCellBudget refuses
+// (typed RESET_NOT_NEEDED) on a healthy cell, so the dispatcher-wiring proof
+// must first close the door for real. The forced attempts below are
+// injected directly (rather than via a claim/verify/unclaim loop) so this
+// test stays independent of exactly how many ledger entries the claim/
+// verify/block/drop chain above already left behind. The full exhaustion/
+// refusal/reopen behavior is covered end to end in test_lib.mjs; this test
+// proves the registry example (including its --operator actor) runs
+// through the real dispatcher (registry -> handler -> resetCellBudget).
+await check('cells.reset-budget example runs through the real dispatcher, after the door is actually closed by CELL_BUDGET_EXHAUSTED', async () => {
+  const cellFile = path.join(root, '.bee', 'cells', 'demo-1.json');
+  const demo1 = JSON.parse(fs.readFileSync(cellFile, 'utf8'));
+  const forcedAttempts = [0, 1, 2, 3].map((i) => ({
+    n: i + 1,
+    at: new Date(Date.now() - (10 - i) * 1000).toISOString(),
+    claim_session: `sess-reset-example-${i}`,
+    claimed_at: new Date(Date.now() - (10 - i) * 1000).toISOString(),
+    worker: 'w',
+    verdict: 'blocked',
+    failure_signature: `forced-reset-example-${i}`,
+    note: null,
+  }));
+  demo1.trace = { ...(demo1.trace || {}), attempts: [...((demo1.trace && demo1.trace.attempts) || []), ...forcedAttempts] };
+  fs.writeFileSync(cellFile, JSON.stringify(demo1, null, 2), 'utf8');
+
+  const result = await assertExampleOk('cells.reset-budget');
+  const cell = JSON.parse(result.stdout);
+  assert(cell.id === 'demo-1', `expected demo-1, got ${result.stdout}`);
+  assert(
+    Array.isArray(cell.trace.budget_resets) && cell.trace.budget_resets.length === 1,
+    `expected one budget_resets entry, got ${JSON.stringify(cell.trace.budget_resets)}`,
+  );
+  assert(
+    typeof cell.trace.budget_resets[0].by_actor === 'string' && cell.trace.budget_resets[0].by_actor,
+    `expected the example's --operator to land as by_actor, got ${JSON.stringify(cell.trace.budget_resets[0])}`,
+  );
+});
+
+// D5 (self-correcting-loop): cells.judge-record's registry example, run
+// against demo-1 with --builder-model/--judge-model both present and
+// differing — exercises the full dispatcher wiring (registry -> handler ->
+// recordJudgeVerdict -> validateJudgeVerdict/deriveModelIndependence) and
+// proves the CLI's "flag presence implies pinned" derivation end to end;
+// the pure-function accept/reject/independence rows are covered exhaustively
+// in test_lib.mjs.
+await check('cells.judge-record example runs through the real dispatcher, validates the --file payload, and stamps model_independence from --builder-model/--judge-model presence', async () => {
+  const verdict = {
+    schema: 'judge-verdict/1',
+    verdict: 'PASS',
+    checks: [{ id: 'must_haves', status: 'PASS', evidence: 'diff matches CONTEXT D5 citations' }],
+    fixability: 'automatic',
+    confidence: 'high',
+  };
+  fs.writeFileSync(path.join(root, 'verdict-demo-1.json'), JSON.stringify(verdict), 'utf8');
+  const result = await assertExampleOk('cells.judge-record');
+  const cell = JSON.parse(result.stdout);
+  assert(cell.id === 'demo-1', `expected demo-1, got ${result.stdout}`);
+  const entries = cell.trace.semantic_judge;
+  assert(Array.isArray(entries) && entries.length === 1, `expected one semantic_judge entry, got ${JSON.stringify(entries)}`);
+  assert(entries[0].builder_model === 'sonnet' && entries[0].judge_model === 'opus', `expected the --builder-model/--judge-model flags stored verbatim, got ${JSON.stringify(entries[0])}`);
+  assert(entries[0].model_independence === 'confirmed', `two differing --*-model flags must derive confirmed (CLI-level pinned-by-presence), got ${entries[0].model_independence}`);
+});
+
+await check('cells.judge-record refuses (non-zero exit) a free-prose --file payload, and leaves the ledger untouched', async () => {
+  fs.writeFileSync(path.join(root, 'verdict-demo-1-bad.json'), 'looks fine to me', 'utf8');
+  const result = await runModuleWorker(BEE_MJS, {
+    args: ['cells', 'judge-record', '--id', 'demo-1', '--file', 'verdict-demo-1-bad.json', '--json'],
+    cwd: root,
+  });
+  assert(result.status !== 0, `a free-prose verdict payload must be refused, got exit ${result.status}: stdout=${result.stdout}`);
+  // --json routes a thrown error's message to stdout as {"error": "..."} (emitError), not stderr.
+  assert(/verdict rejected/i.test(result.stdout), `expected a "verdict rejected" refusal, got stdout=${result.stdout} stderr=${result.stderr}`);
 });
 
 await check('reservations.reserve example runs through the real dispatcher', async () => {
@@ -1041,7 +1119,11 @@ await check('reviews fixture setup: a capped behavior_change cell ("ok-1") with 
   const capped = await runModuleWorker(BEE_MJS, {
     args: ['cells', 'cap', '--id', 'ok-1', '--outcome', 'done', '--files', 'a.js', '--behavior-change', '--evidence-stdin', '--json'],
     cwd: rootReviewsFeedback,
-    input: JSON.stringify({ red_failure_evidence: 'prior behavior', verification_run: 'node -e 0' }),
+    input: JSON.stringify({
+      red_failure_evidence:
+        'ok-1: prior behavior characterized before this reviews-fixture change, meeting the D3 anti-boilerplate floor (>=80 chars).',
+      verification_run: 'node -e 0',
+    }),
   });
   assert(capped.status === 0, `cells cap setup failed: ${capped.status}: stdout=${capped.stdout} stderr=${capped.stderr}`);
   assert(JSON.parse(capped.stdout).trace.verification_evidence, 'ok-1 should carry recorded verification_evidence for the A10 preflight');
@@ -1175,11 +1257,117 @@ await check('perf.sync example scans + writes the log (transcript-less temp env)
   assert(typeof res.sessions === 'number', 'perf sync --json reports a session count');
 });
 
+// ─── dispatch group example (g22-1, GH #22 P0-3): a read-only "gather" kind
+// needs no --cell and no extra fixture state, so it runs safely against the
+// shared `root` fixture above (no config.json there -> the seeded default
+// claude.generation model "sonnet" resolves, matching state.mjs's
+// DEFAULT_MODELS). Full behavioral coverage (codex/claude payload shapes,
+// the cli-cell refusal, advisor resolution, the prepare-time dispatch
+// record) lives in scripts/test_dispatch_prepare.mjs — this is the
+// registry-example-is-a-tested-contract proof for the new group.
+await check('dispatch.prepare example runs through the real dispatcher', async () => {
+  const result = await assertExampleOk('dispatch.prepare');
+  const out = JSON.parse(result.stdout);
+  assert(out.tool === 'Agent', `expected tool Agent, got ${result.stdout}`);
+  assert(out.payload.subagent_type === 'bee-gather', `expected pinned type bee-gather, got ${result.stdout}`);
+  assert(typeof out.dispatch_id === 'string' && out.dispatch_id, `expected a dispatch_id, got ${result.stdout}`);
+  assert(out.economics && out.economics.channel === 'claude-agent', `expected channel claude-agent, got ${result.stdout}`);
+});
+
 // ─── worktree group examples: a REAL git repo + real `git worktree add`,
 // mirroring the fixture pattern scripts/test_worktree_cli.mjs already proved
 // end-to-end. A dedicated temp tree (not the shared `root` above, which has
 // no .git and is deliberately classified 'ordinary') so register's own
 // "must run from inside a linked worktree" requirement is satisfiable. ─────
+await check('worktree.new example runs through the real dispatcher against a real ORDINARY checkout, creating and granting a linked worktree in one move (wsr-1, GH #21)', async () => {
+  const wtNewTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-cli-worktree-new-'));
+  try {
+    const git = (cwd, args) => {
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      assert(r.status === 0, `git ${args.join(' ')} (cwd=${cwd}) failed: ${r.stderr}`);
+      return r.stdout;
+    };
+
+    const wtNewMain = path.join(wtNewTmp, 'main');
+    fs.mkdirSync(wtNewMain);
+    git(wtNewMain, ['init', '-q', '-b', 'main']);
+    git(wtNewMain, ['config', 'user.email', 's@e']);
+    git(wtNewMain, ['config', 'user.name', 's']);
+    fs.writeFileSync(path.join(wtNewMain, 'f'), 'x');
+    git(wtNewMain, ['add', '.']);
+    git(wtNewMain, ['commit', '-q', '-m', 'init']);
+    fs.mkdirSync(path.join(wtNewMain, '.bee'), { recursive: true });
+    writeJsonAtomic(path.join(wtNewMain, '.bee', 'onboarding.json'), { schema_version: '1.0', bee_version: '0.1.0' });
+
+    // registry example: 'bee worktree new --feature demo-feature --json'
+    const result = await assertExampleOk('worktree.new', { cwd: wtNewMain });
+    const created = JSON.parse(result.stdout);
+    assert(typeof created.id === 'string' && created.id, `worktree.new example should report a git-verified id, got ${result.stdout}`);
+    assert(created.branch === 'wt/demo-feature', `worktree.new example should create branch "wt/demo-feature", got ${JSON.stringify(created)}`);
+    assert(fs.existsSync(created.worktreeRoot), `worktree.new example should create ${created.worktreeRoot}`);
+    const newStateFile = path.join(created.worktreeRoot, '.bee', 'state.json');
+    assert(fs.existsSync(newStateFile), 'worktree.new example should bootstrap .bee/state.json');
+    const newState = JSON.parse(fs.readFileSync(newStateFile, 'utf8'));
+    assert(
+      newState.feature === 'demo-feature' && newState.phase === 'idle',
+      `expected a fresh idle demo-feature state, got ${JSON.stringify(newState)}`,
+    );
+    const grantsFile = path.join(wtNewMain, '.bee', 'runtime', 'worktree-grants.json');
+    const grants = JSON.parse(fs.readFileSync(grantsFile, 'utf8'));
+    assert(grants[created.id] === true, `worktree.new example should grant the new worktree's id, got ${JSON.stringify(grants)}`);
+
+    // Running the SAME example again from the same ordinary checkout must
+    // typed-refuse (the target directory now exists), never crash.
+    const repeatResult = await runExample('worktree.new', { cwd: wtNewMain });
+    assert(repeatResult.result.status !== 0, 'a second "worktree new --feature demo-feature" from the same checkout must not exit 0');
+    assert(
+      /WORKTREE_TARGET_EXISTS/.test(repeatResult.result.stdout + repeatResult.result.stderr),
+      `expected a typed WORKTREE_TARGET_EXISTS refusal, got stdout=${repeatResult.result.stdout} stderr=${repeatResult.result.stderr}`,
+    );
+  } finally {
+    fs.rmSync(wtNewTmp, { recursive: true, force: true });
+  }
+});
+
+await check('worktree.merge example (registry refusal-shaped: unknown id) runs through the real dispatcher against a real ORDINARY checkout (wsr-2, GH #21)', async () => {
+  const wtMergeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-cli-worktree-merge-'));
+  try {
+    const git = (cwd, args) => {
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      assert(r.status === 0, `git ${args.join(' ')} (cwd=${cwd}) failed: ${r.stderr}`);
+      return r.stdout;
+    };
+
+    const wtMergeMain = path.join(wtMergeTmp, 'main');
+    fs.mkdirSync(wtMergeMain);
+    git(wtMergeMain, ['init', '-q', '-b', 'main']);
+    git(wtMergeMain, ['config', 'user.email', 's@e']);
+    git(wtMergeMain, ['config', 'user.name', 's']);
+    fs.writeFileSync(path.join(wtMergeMain, 'f'), 'x');
+    git(wtMergeMain, ['add', '.']);
+    git(wtMergeMain, ['commit', '-q', '-m', 'init']);
+    fs.mkdirSync(path.join(wtMergeMain, '.bee'), { recursive: true });
+    writeJsonAtomic(path.join(wtMergeMain, '.bee', 'onboarding.json'), { schema_version: '1.0', bee_version: '0.1.0' });
+
+    // registry example: 'bee worktree merge --id demo-feature-missing --json'
+    // — deliberately refusal-shaped (an unknown/ungranted id): no worktree
+    // fixture is needed just to prove the example is runnable through the
+    // real dispatcher from a real ORDINARY checkout. The full green-path /
+    // MERGE_CONFLICT / MERGE_VERIFY_RED / cleanup surface is proven
+    // end-to-end, with real git worktrees, in scripts/test_worktree_cli.mjs
+    // (part of the mandatory verify chain) — this check only satisfies the
+    // "every registry example is executed" guard below.
+    const { result } = await runExample('worktree.merge', { cwd: wtMergeMain });
+    assert(result.status !== 0, `expected the unknown-id example to refuse (non-zero exit), got status 0: ${result.stdout}`);
+    assert(
+      /WORKTREE_MERGE_UNKNOWN_ID/.test(result.stdout + result.stderr),
+      `expected a typed WORKTREE_MERGE_UNKNOWN_ID refusal, got stdout=${result.stdout} stderr=${result.stderr}`,
+    );
+  } finally {
+    fs.rmSync(wtMergeTmp, { recursive: true, force: true });
+  }
+});
+
 await check('worktree.register/list/unregister examples run through the real dispatcher against a real linked git worktree', async () => {
   const wtTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-cli-worktree-'));
   try {
@@ -1330,6 +1518,358 @@ await check('config set: nested dot-key, string coercion, refuse-on-invalid, no-
   }
 });
 
+await check('state.advisor-ref examples run through the real dispatcher', async () => {
+  // makeAdvisorRoot is a hoisted function declaration (defined in the advisor
+  // block below); an active feature + a present digest file let the record
+  // example succeed, and show round-trips it.
+  const dir = makeAdvisorRoot({ mode: 'standard' });
+  fs.writeFileSync(path.join(dir, 'consult.txt'), 'example consult digest body');
+  await assertExampleOk('state.advisor-ref.record', { cwd: dir });
+  const show = await assertExampleOk('state.advisor-ref.show', { cwd: dir });
+  assert(JSON.parse(show.stdout).advisor_ref.advisor === 'gpt-5.6-sol', `show example returns the recorded advisor, got ${show.stdout}`);
+});
+
+// ─── doctor (codex-native-runtime-v2 cnr2-13, D11): fail-closed runtime
+// health report. A dedicated isolated fixture repo per test — doctor reads
+// .codex/hooks.json, .claude/settings.json, hooks/*.mjs, and
+// .bee/onboarding.json's recorded baseline hash, none of which the shared
+// `root`/`root2` fixtures carry in the exact shape these tests need.
+
+const DOCTOR_HOOKS_JSON = {
+  hooks: {
+    PreToolUse: [
+      {
+        matcher: 'spawn_agent',
+        hooks: [{ type: 'command', command: 'exec node "$r"/hooks/bee-model-guard.mjs --source=repo' }],
+      },
+    ],
+    Stop: [{ hooks: [{ type: 'command', command: 'exec node "$r"/hooks/bee-state-sync.mjs --source=repo' }] }],
+  },
+};
+
+function buildDoctorFixture({ withHandlerFiles = true } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-doctor-test-'));
+  fs.mkdirSync(path.join(dir, '.bee'), { recursive: true });
+  fs.mkdirSync(path.join(dir, '.codex'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'hooks'), { recursive: true });
+  const hooksJsonPath = path.join(dir, '.codex', 'hooks.json');
+  fs.writeFileSync(hooksJsonPath, `${JSON.stringify(DOCTOR_HOOKS_JSON, null, 2)}\n`, 'utf8');
+  if (withHandlerFiles) {
+    fs.writeFileSync(path.join(dir, 'hooks', 'bee-model-guard.mjs'), '// stub\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'hooks', 'bee-state-sync.mjs'), '// stub\n', 'utf8');
+  }
+  fs.writeFileSync(path.join(dir, '.codex', 'config.toml'), 'approval_policy = "never"\n', 'utf8');
+  writeJsonAtomic(path.join(dir, '.bee', 'onboarding.json'), {
+    schema_version: '1.0',
+    bee_version: '0.1.0',
+    managed: { repo_hooks: { '.codex/hooks.json': hashFile(hooksJsonPath) } },
+    agents_sync: { files: [] },
+  });
+  // g22-4/D7: bee-render/2 with an empty skills[] — this fixture creates no
+  // actual bee-* skill dirs under either root, so the deep audit's expected
+  // set is trivially empty and skills_installed stays 'ok'/blocking, exactly
+  // like the old shallow v1 check did for every OTHER doctor test in this
+  // file that does not care about the skill-inventory audit itself (that
+  // audit gets its own dedicated fixture matrix in scripts/test_conformance.mjs
+  // scenarios 14/15 — deep-audit pass/missing/stray/drift, and legacy v1
+  // warn-not-block — against the real .bee/bin/bee.mjs binary).
+  fs.mkdirSync(path.join(dir, '.agents', 'skills'), { recursive: true });
+  writeJsonAtomic(path.join(dir, '.agents', 'skills', '.bee-render.json'), { schema: 'bee-render/2', target_runtime: 'codex', skills: [] });
+  fs.mkdirSync(path.join(dir, '.claude', 'skills'), { recursive: true });
+  writeJsonAtomic(path.join(dir, '.claude', 'skills', '.bee-render.json'), { schema: 'bee-render/2', target_runtime: 'claude', skills: [] });
+  writeJsonAtomic(path.join(dir, '.claude', 'settings.json'), {
+    permissions: { defaultMode: 'bypassPermissions' },
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: 'node .bee/bin/hooks/bee-session-init.mjs' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node .bee/bin/hooks/bee-prompt-context.mjs' }] }],
+      PreToolUse: [
+        { matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node .bee/bin/hooks/bee-write-guard.mjs' }] },
+        { matcher: 'Agent|Task', hooks: [{ type: 'command', command: 'node .bee/bin/hooks/bee-model-guard.mjs' }] },
+      ],
+      PostToolUse: [{ hooks: [{ type: 'command', command: 'node .bee/bin/hooks/bee-tools-logger.mjs' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'node .bee/bin/hooks/bee-state-sync.mjs' }] }],
+    },
+  });
+  fs.mkdirSync(path.join(dir, '.bee', 'bin', 'hooks'), { recursive: true });
+  // bee-model-guard.mjs / bee-state-sync.mjs are the SAME two filenames the
+  // codex fixture above references (GH #22 P1-1: doctor's dual-location
+  // check resolves a codex handler at .bee/bin/hooks/<f> OR hooks/<f>) —
+  // when withHandlerFiles is false, both locations must lack them for the
+  // codex missing-handler assertion below to still hold; the other four
+  // stay so claude's own handlers_resolvable row (a distinct check, not
+  // exercised by that assertion) is unaffected.
+  const beeBinHandlerFiles = withHandlerFiles
+    ? ['bee-session-init.mjs', 'bee-prompt-context.mjs', 'bee-write-guard.mjs', 'bee-model-guard.mjs', 'bee-tools-logger.mjs', 'bee-state-sync.mjs']
+    : ['bee-session-init.mjs', 'bee-prompt-context.mjs', 'bee-write-guard.mjs', 'bee-tools-logger.mjs'];
+  for (const f of beeBinHandlerFiles) {
+    fs.writeFileSync(path.join(dir, '.bee', 'bin', 'hooks', f), '// stub\n', 'utf8');
+  }
+  return dir;
+}
+
+await check('doctor: ok fixture — checkable codex rows pass ok, mechanical-green codex reaches degraded (no attestation), claude reaches overall_status ready', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const codexResult = await assertExampleOk('doctor', { exampleIndex: 0, cwd: dir });
+    const codex = JSON.parse(codexResult.stdout);
+    assert(codex.runtime === 'codex', `expected runtime codex, got ${JSON.stringify(codex)}`);
+    const byRow = Object.fromEntries(codex.rows.map((r) => [r.row, r]));
+    assert(byRow.hooks_file_present.status === 'ok', `hooks_file_present should be ok, got ${JSON.stringify(byRow.hooks_file_present)}`);
+    assert(byRow.capability_baseline_match.status === 'ok', `capability_baseline_match should be ok on a matching baseline, got ${JSON.stringify(byRow.capability_baseline_match)}`);
+    assert(byRow.hook_handlers_resolvable.status === 'ok', `hook_handlers_resolvable should be ok when every handler file exists, got ${JSON.stringify(byRow.hook_handlers_resolvable)}`);
+    // D4 three-state: mechanical rows are all ok, but codex's structurally-
+    // unknown trust rows still `degrades` readiness with no attestation
+    // recorded — 'degraded', never a bare "ready" from file presence alone,
+    // and never 'blocked' either since nothing mechanical failed.
+    assert(codex.overall_status === 'degraded', `codex overall_status must be degraded (mechanical green, trust rows unknown, no attestation), got ${codex.overall_status}`);
+    assert(codex.reasons.some((r) => r.startsWith('hooks_discovered:')), `reasons must name the degrading trust rows, got ${JSON.stringify(codex.reasons)}`);
+    assert(codex.reasons.some((r) => r.startsWith('no_attestation:')), `reasons must name no_attestation, got ${JSON.stringify(codex.reasons)}`);
+    assert(codex.attestation && codex.attestation.status === 'invalid' && codex.attestation.reason === 'no_attestation', `attestation summary must report invalid/no_attestation, got ${JSON.stringify(codex.attestation)}`);
+
+    const claudeResult = await assertExampleOk('doctor', { exampleIndex: 1, cwd: dir });
+    const claude = JSON.parse(claudeResult.stdout);
+    assert(claude.runtime === 'claude', `expected runtime claude, got ${JSON.stringify(claude)}`);
+    assert(claude.overall_status === 'ready', `claude should reach ready on a fully-wired fixture with no blocking rows, got ${claude.overall_status}: ${JSON.stringify(claude.rows)}`);
+    assert(!('attestation' in claude), `claude has no attestation model and must not carry an attestation field, got ${JSON.stringify(claude)}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor attest: a valid attestation over a mechanical-green fixture reaches ready', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const attestResult = await assertExampleOk('doctor.attest', { cwd: dir });
+    const attested = JSON.parse(attestResult.stdout);
+    assert(attested.ok === true && attested.attestation && typeof attested.attestation.hooks_file_sha256 === 'string', `doctor attest must record an attestation, got ${attestResult.stdout}`);
+    assert(fs.existsSync(path.join(dir, '.bee', 'doctor-attest.json')), 'doctor attest must write .bee/doctor-attest.json');
+
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'codex', '--json'], cwd: dir });
+    assert(result.status === 0, `doctor must not throw after attesting, got exit ${result.status}: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert(parsed.overall_status === 'ready', `a valid attestation over a mechanical-green fixture must reach ready, got ${parsed.overall_status}: ${JSON.stringify(parsed.reasons)}`);
+    assert(parsed.attestation && parsed.attestation.status === 'valid', `attestation summary must report valid, got ${JSON.stringify(parsed.attestation)}`);
+    assert(parsed.reasons.length === 0, `ready must carry no reasons, got ${JSON.stringify(parsed.reasons)}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor attest: flipping .codex/hooks.json after attesting goes stale (hash_changed) -> degraded', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    await assertExampleOk('doctor.attest', { cwd: dir });
+    // A real post-attestation drift — mutate the live file AFTER attesting.
+    // Keeps the same hook commands (so hook_handlers_resolvable/capability_
+    // baseline_match — re-baselined below — both stay mechanically ok) and
+    // only adds a harmless marker field, isolating the assertion to the
+    // attestation's own hash leg rather than the mechanical rows.
+    fs.writeFileSync(
+      path.join(dir, '.codex', 'hooks.json'),
+      `${JSON.stringify({ ...DOCTOR_HOOKS_JSON, _post_attest_marker: true }, null, 2)}\n`,
+      'utf8',
+    );
+    writeJsonAtomic(path.join(dir, '.bee', 'onboarding.json'), {
+      schema_version: '1.0',
+      bee_version: '0.1.0',
+      managed: { repo_hooks: { '.codex/hooks.json': hashFile(path.join(dir, '.codex', 'hooks.json')) } },
+      agents_sync: { files: [] },
+    });
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'codex', '--json'], cwd: dir });
+    assert(result.status === 0, `doctor must not throw on a stale attestation, got exit ${result.status}: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert(parsed.overall_status === 'degraded', `a stale (hash-changed) attestation must degrade, not block or ready, got ${parsed.overall_status}`);
+    assert(parsed.attestation && parsed.attestation.status === 'invalid' && parsed.attestation.reason === 'hash_changed', `attestation summary must name hash_changed, got ${JSON.stringify(parsed.attestation)}`);
+    assert(parsed.reasons.some((r) => r.startsWith('hash_changed:')), `reasons must name hash_changed, got ${JSON.stringify(parsed.reasons)}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor attest: --runtime claude is refused (no attestation model)', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', 'attest', '--runtime', 'claude', '--json'], cwd: dir });
+    assert(result.status !== 0, `doctor attest --runtime claude must be refused, got exit ${result.status}: ${result.stdout}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: missing .codex/hooks.json -> blocked (mechanical, not merely degraded)', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    fs.rmSync(path.join(dir, '.codex', 'hooks.json'));
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'codex', '--json'], cwd: dir });
+    assert(result.status === 0, `doctor must not throw on a missing hooks file, got exit ${result.status}: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert(parsed.overall_status === 'blocked', `a missing mechanical hooks file must block readiness outright, got ${parsed.overall_status}`);
+    assert(parsed.reasons.some((r) => r.startsWith('hooks_file_present:')), `reasons must name hooks_file_present, got ${JSON.stringify(parsed.reasons)}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: version-mismatch wording — a live codex --version other than the probed one reports unprobed_version, never the probed conclusions', async () => {
+  const dir = buildDoctorFixture();
+  const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-doctor-codex-stub-'));
+  try {
+    // A tiny fake "codex" binary ahead on PATH that reports a version other
+    // than PROBED_CODEX_VERSION ('0.144.4') — proves the wording switches
+    // without needing an actually-different codex install on this machine.
+    const stubPath = path.join(stubDir, 'codex');
+    fs.writeFileSync(stubPath, '#!/bin/sh\necho "codex-cli 9.9.9"\n', { mode: 0o755 });
+    const result = await runModuleWorker(BEE_MJS, {
+      args: ['doctor', '--runtime', 'codex', '--json'],
+      cwd: dir,
+      env: { ...process.env, PATH: `${stubDir}${path.delimiter}${process.env.PATH || ''}` },
+    });
+    assert(result.status === 0, `doctor must not throw on an unprobed codex version, got exit ${result.status}: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    const row = parsed.rows.find((r) => r.row === 'hooks_discovered');
+    assert(row.evidence.includes('unprobed_version'), `evidence must carry the unprobed_version token, got ${row.evidence}`);
+    assert(!row.evidence.includes('0.144.4 exposes no machine-readable'), `evidence must not assert the probed-version conclusion verbatim, got ${row.evidence}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(stubDir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: missing hook handler file -> hook_handlers_resolvable warns and names the missing file', async () => {
+  const dir = buildDoctorFixture({ withHandlerFiles: false });
+  try {
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'codex', '--json'], cwd: dir });
+    assert(result.status === 0, `doctor must not throw, got exit ${result.status}: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    const row = parsed.rows.find((r) => r.row === 'hook_handlers_resolvable');
+    assert(row.status === 'warn', `expected hook_handlers_resolvable warn on missing handler files, got ${JSON.stringify(row)}`);
+    assert(row.evidence.includes('bee-model-guard.mjs') || row.evidence.includes('bee-state-sync.mjs'), `evidence should name a missing handler, got ${row.evidence}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: codex binary absent from PATH -> codex_version warns instead of crashing', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    // An empty PATH inside the isolated worker's own env cannot resolve the
+    // "codex" binary, regardless of what is actually installed on the
+    // machine running this suite — the parent process's PATH is untouched.
+    const result = await runModuleWorker(BEE_MJS, {
+      args: ['doctor', '--runtime', 'codex', '--json'],
+      cwd: dir,
+      env: { ...process.env, PATH: '' },
+    });
+    assert(result.status === 0, `doctor must not throw when codex is absent, got exit ${result.status}: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    const row = parsed.rows.find((r) => r.row === 'codex_version');
+    assert(row.status === 'warn', `expected codex_version warn when the binary cannot be found, got ${JSON.stringify(row)}`);
+    assert(row.value === null, `codex_version value should be null when unresolved, got ${JSON.stringify(row.value)}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: codex trust/discovery rows are always present, unknown, and degrading (D4 re-class: no longer blocking) — never inferred from file presence', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'codex', '--json'], cwd: dir });
+    const parsed = JSON.parse(result.stdout);
+    for (const rowName of ['hooks_discovered', 'hooks_trusted', 'project_trust', 'pending_hook_review']) {
+      const row = parsed.rows.find((r) => r.row === rowName);
+      assert(row, `row "${rowName}" must always be present on --runtime codex`);
+      assert(row.status === 'unknown', `${rowName} must stay unknown, got ${row.status}`);
+      // D4 re-class: these rows carry `degrades: true`, never `blocking`
+      // anymore — a bare unknown trust state degrades readiness (recoverable
+      // via "doctor attest"), it no longer blocks it outright.
+      assert(row.degrades === true, `${rowName} must be marked degrades, got ${JSON.stringify(row)}`);
+      assert(!row.blocking, `${rowName} must no longer be marked blocking, got ${JSON.stringify(row)}`);
+      assert(typeof row.degraded_reason === 'string' && row.degraded_reason.length > 0, `${rowName} must carry a degraded_reason, got ${JSON.stringify(row)}`);
+    }
+    assert(parsed.overall_status === 'degraded', 'unattested degrading trust rows must degrade (not block, not ready)');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: custom_agents verdict is version-scoped, never a bare "unsupported"', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'codex', '--json'], cwd: dir });
+    const parsed = JSON.parse(result.stdout);
+    const row = parsed.rows.find((r) => r.row === 'custom_agents');
+    assert(row.status === 'unsupported', `expected unsupported, got ${JSON.stringify(row)}`);
+    assert(row.evidence.includes('0.144.4'), `custom_agents evidence must cite the probed version, got ${row.evidence}`);
+    assert(row.evidence.toLowerCase().includes('version-scoped') || row.evidence.toLowerCase().includes('other versions'), `custom_agents evidence must scope the verdict to the probed version, got ${row.evidence}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: performs zero writes, even with an unwritable cache directory (read-only sandbox)', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const cacheDir = path.join(dir, '.bee', 'cache');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheFile = path.join(cacheDir, 'manifest-hash.json');
+    fs.chmodSync(cacheDir, 0o500); // read+execute only: writes/creates inside must fail
+    try {
+      const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'codex', '--json'], cwd: dir });
+      assert(result.status === 0, `doctor must not crash under an unwritable cache dir, got exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+      assert(!fs.existsSync(cacheFile), `doctor must never create ${cacheFile} — it is read-only FOR REAL, not merely best-effort`);
+    } finally {
+      fs.chmodSync(cacheDir, 0o700);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: a mutating command still persists the manifest-hash cache (best-effort, not weakened)', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const cacheFile = path.join(dir, '.bee', 'cache', 'manifest-hash.json');
+    assert(!fs.existsSync(cacheFile), 'precondition: no cache file yet');
+    const result = await runModuleWorker(BEE_MJS, { args: ['status', '--json'], cwd: dir });
+    assert(result.status === 0, `status must succeed, got ${result.status}: ${result.stderr}`);
+    assert(fs.existsSync(cacheFile), 'a non-doctor command must still persist the manifest-hash cache');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: --json shape is stable (runtime, overall_status, rows[], reasons[]) for both runtimes', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    for (const runtime of ['codex', 'claude']) {
+      const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', runtime, '--json'], cwd: dir });
+      assert(result.status === 0, `doctor --runtime ${runtime} must exit 0, got ${result.status}: ${result.stderr}`);
+      const parsed = JSON.parse(result.stdout);
+      assert(parsed.runtime === runtime, `runtime field mismatch, got ${JSON.stringify(parsed)}`);
+      assert(['ready', 'degraded', 'blocked'].includes(parsed.overall_status), `overall_status must be ready|degraded|blocked, got ${parsed.overall_status}`);
+      assert(Array.isArray(parsed.rows) && parsed.rows.length > 0, `rows must be a non-empty array, got ${JSON.stringify(parsed.rows)}`);
+      for (const row of parsed.rows) {
+        assert(typeof row.row === 'string' && row.row, `every row needs a name, got ${JSON.stringify(row)}`);
+        assert(['ok', 'warn', 'unknown', 'unsupported'].includes(row.status), `row "${row.row}" has an unrecognized status "${row.status}"`);
+        assert(typeof row.evidence === 'string' && row.evidence, `row "${row.row}" must carry non-empty evidence`);
+      }
+      assert(Array.isArray(parsed.reasons), `reasons must be an array, got ${JSON.stringify(parsed.reasons)}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await check('doctor: an unknown --runtime is refused, never silently defaulted', async () => {
+  const dir = buildDoctorFixture();
+  try {
+    const result = await runModuleWorker(BEE_MJS, { args: ['doctor', '--runtime', 'windows', '--json'], cwd: dir });
+    assert(result.status !== 0, `an unrecognized runtime must be refused, got exit ${result.status}: ${result.stdout}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 await check('every registry entry had its example executed at least once (nothing silently skipped)', async () => {
   const allNames = new Set(COMMAND_REGISTRY.map((e) => e.name));
   const missing = [...allNames].filter((name) => !executedNames.has(name));
@@ -1431,6 +1971,103 @@ await check('computeManifestHash is deterministic and sensitive to content', asy
   assert(h3 !== h1, 'different registry content must hash differently');
 });
 
+// ─── manifestLintWarning (H2, post-advisor-hardening): pure-logic unit tests
+// for the advisory release-manifest trap lint (add/update never refuse — see
+// the CLI-level end-to-end rows further down for the through-the-dispatcher
+// coverage). ─────────────────────────────────────────────────────────────
+
+await check('manifestLintWarning fires on the trap shape: verify mentions release_manifest, files lacks the manifest path', async () => {
+  const warning = manifestLintWarning({
+    id: 'trap-1',
+    verify: 'node scripts/release_manifest.mjs --check',
+    files: ['some/other/file.mjs'],
+  });
+  assert(warning && /trap-1/.test(warning), `expected a warning naming the cell id, got: ${warning}`);
+  assert(/release_manifest\.mjs --write/.test(warning), `expected the FIX to name --write, got: ${warning}`);
+});
+
+await check('manifestLintWarning is silent when the manifest path is already listed in files', async () => {
+  const warning = manifestLintWarning({
+    id: 'trap-2',
+    verify: 'node scripts/release_manifest.mjs --check',
+    files: ['docs/history/codex-harness-hardening/release-manifest.json'],
+  });
+  assert(warning === null, `expected no warning, got: ${warning}`);
+});
+
+await check('manifestLintWarning is silent when verify does not mention release_manifest', async () => {
+  const warning = manifestLintWarning({ id: 'trap-3', verify: 'node -e "process.exit(0)"', files: [] });
+  assert(warning === null, `expected no warning, got: ${warning}`);
+});
+
+await check('manifestLintWarning tolerates malformed cell shapes without throwing', async () => {
+  assert(manifestLintWarning(null) === null, 'null cell must not throw');
+  assert(manifestLintWarning(undefined) === null, 'undefined cell must not throw');
+  assert(manifestLintWarning({}) === null, 'empty object (no verify) must not throw');
+  assert(manifestLintWarning({ id: 'trap-4', verify: null, files: [] }) === null, 'non-string verify must not throw');
+  assert(
+    manifestLintWarning({ id: 'trap-5', verify: 'node scripts/release_manifest.mjs --check' }) !== null,
+    'missing files array defaults to [] and still fires — not treated as malformed-silent',
+  );
+  assert(
+    manifestLintWarning({ id: 'trap-6', verify: 'node scripts/release_manifest.mjs --check', files: 'not-an-array' }) !== null,
+    'non-array files also defaults to [] and still fires',
+  );
+});
+
+// ─── judgeStandardWarning (D3, self-correcting-loop): pure-logic unit tests
+// for the advisory judge-standard sufficiency matrix (F4) — add/update never
+// refuse, see the CLI-level end-to-end rows further down for the through-the-
+// dispatcher coverage, mirroring manifestLintWarning's own H2 layout above.
+
+await check('judgeStandardWarning is silent for an unclassified cell — no change_class, no behavior_change:true (D3: no matrix check at all)', async () => {
+  assert(judgeStandardWarning({ id: 'jsw-1', verify: 'node -e 0' }) === null, 'unclassified cell must never warn');
+  assert(judgeStandardWarning({ id: 'jsw-2', verify: 'node -e 0', behavior_change: false }) === null, 'behavior_change:false stays unclassified');
+});
+
+await check('judgeStandardWarning fires per class when the verify string is missing that class\'s named minimum (formatting/bugfix/api/security/migration)', async () => {
+  const cases = [
+    ['formatting', { id: 'jsw-fmt', change_class: 'formatting', verify: 'node -e 0' }],
+    ['bugfix', { id: 'jsw-bug', change_class: 'bugfix', verify: 'node -e 0' }],
+    ['api', { id: 'jsw-api', change_class: 'api', verify: 'node -e 0' }],
+    ['security', { id: 'jsw-sec', change_class: 'security', verify: 'node -e 0' }],
+    ['migration', { id: 'jsw-mig', change_class: 'migration', verify: 'node -e 0' }],
+  ];
+  for (const [cls, cell] of cases) {
+    const warning = judgeStandardWarning(cell);
+    assert(warning && warning.includes('JUDGE_STANDARD_INSUFFICIENT'), `expected a JUDGE_STANDARD_INSUFFICIENT warning for class "${cls}", got: ${warning}`);
+    assert(warning.includes(cell.id), `expected the warning to name the cell id for class "${cls}", got: ${warning}`);
+    assert(warning.includes(cls), `expected the warning to name the class "${cls}", got: ${warning}`);
+  }
+});
+
+await check('judgeStandardWarning stays silent per class once verify names that class\'s minimum', async () => {
+  assert(judgeStandardWarning({ id: 'jsw-fmt-ok', change_class: 'formatting', verify: 'npm run lint && npm run typecheck' }) === null, 'formatting: lint/typecheck present');
+  assert(judgeStandardWarning({ id: 'jsw-bug-ok', change_class: 'bugfix', verify: 'node tests/test_foo.mjs' }) === null, 'bugfix: a test path named');
+  assert(judgeStandardWarning({ id: 'jsw-api-ok', change_class: 'api', verify: 'node tests/test_contract.mjs' }) === null, 'api: a contract test named');
+  assert(judgeStandardWarning({ id: 'jsw-sec-ok', change_class: 'security', verify: 'node tests/test_negative_path.mjs' }) === null, 'security: a negative-path test named');
+  assert(judgeStandardWarning({ id: 'jsw-mig-ok', change_class: 'migration', verify: 'node migrate.mjs forward && node migrate.mjs rollback' }) === null, 'migration: forward + rollback both named');
+});
+
+await check('judgeStandardWarning fires for a behavior-class cell with no pre-attached red_failure_evidence, and is silent once one is present', async () => {
+  const warning = judgeStandardWarning({ id: 'jsw-behavior-1', behavior_change: true, verify: 'node -e 0' });
+  assert(warning && warning.includes('jsw-behavior-1') && warning.includes('behavior'), `expected a behavior-class warning, got: ${warning}`);
+  const silent = judgeStandardWarning({
+    id: 'jsw-behavior-2',
+    behavior_change: true,
+    verify: 'node -e 0',
+    verification_evidence: { red_failure_evidence: 'a pre-attached characterization of the prior behavior' },
+  });
+  assert(silent === null, 'a cell already carrying red_failure_evidence at authoring time must not warn');
+});
+
+await check('judgeStandardWarning tolerates malformed cell shapes without throwing', async () => {
+  assert(judgeStandardWarning(null) === null, 'null cell must not throw');
+  assert(judgeStandardWarning(undefined) === null, 'undefined cell must not throw');
+  assert(judgeStandardWarning({}) === null, 'empty object (unclassified) must not throw');
+  assert(judgeStandardWarning({ id: 'jsw-bad', change_class: 'behavior', verify: null }) !== null, 'non-string verify must not throw, and behavior still warns without evidence');
+});
+
 // ─── end-to-end: --help / --help --json (D3 tool-schema manifest) ─────────
 
 await check('bee --help --json parses as valid JSON and lists every existing subcommand', async () => {
@@ -1449,6 +2086,44 @@ await check('bee --help renders non-empty prose naming known commands', async ()
   const result = await runBee(['--help']);
   assert(result.status === 0, `exit ${result.status}: ${result.stderr}`);
   assert(result.stdout.includes('bee cells ready'), `expected "bee cells ready" invoke text, got: ${result.stdout}`);
+});
+
+// ─── group/command-scoped --help (GH #23) ──────────────────────────────────
+
+await check('bee state --help --json exits 0 and lists only state.* commands, including state.set', async () => {
+  const result = await runBee(['state', '--help', '--json']);
+  assert(result.status === 0, `exit ${result.status}: ${result.stderr}`);
+  const manifest = JSON.parse(result.stdout);
+  assert(manifest.schema_version === SCHEMA_VERSION, `schema_version: ${manifest.schema_version}`);
+  const names = manifest.commands.map((c) => c.name);
+  assert(names.includes('state.set'), `expected "state.set" among scoped commands, got: ${names.join(', ')}`);
+  assert(names.every((n) => n.startsWith('state.')), `expected only state.* commands, got: ${names.join(', ')}`);
+});
+
+await check('bee cells --help (text) exits 0 and names only cells.* invokes', async () => {
+  const result = await runBee(['cells', '--help']);
+  assert(result.status === 0, `exit ${result.status}: ${result.stderr}`);
+  assert(result.stdout.includes('bee cells ready'), `expected "bee cells ready" invoke text, got: ${result.stdout}`);
+  assert(!result.stdout.includes('bee state set'), `scoped "cells --help" leaked an unrelated command: ${result.stdout}`);
+});
+
+await check('bee state handoff --help --json scopes to state.handoff.* only', async () => {
+  const result = await runBee(['state', 'handoff', '--help', '--json']);
+  assert(result.status === 0, `exit ${result.status}: ${result.stderr}`);
+  const manifest = JSON.parse(result.stdout);
+  const names = manifest.commands.map((c) => c.name);
+  assert(names.length > 0, 'expected at least one state.handoff.* command');
+  assert(names.every((n) => n.startsWith('state.handoff.')), `expected only state.handoff.* commands, got: ${names.join(', ')}`);
+  assert(names.includes('state.handoff.show'), `expected "state.handoff.show" among scoped commands, got: ${names.join(', ')}`);
+});
+
+await check('bee bogusgroup --help still errors exactly like an unrecognized command (unknown group unaffected)', async () => {
+  const result = await runBee(['bogusgroup', '--help']);
+  assert(result.status === 1, `expected exit 1, got ${result.status}: stdout=${result.stdout}`);
+  // No GROUP_USAGE_FALLBACKS entry for "bogusgroup" -> falls through to the
+  // generic nearest-match suggestion path, which emits via emit() (stdout),
+  // not emitError() (stderr) — unchanged from today's non-help behavior.
+  assert(result.stdout.includes('Unknown command "bogusgroup"'), `expected the unchanged unknown-command message, got: ${result.stdout}`);
 });
 
 // ─── demo-2 fixture chain, driven entirely through the bee.mjs dispatcher ──
@@ -1502,9 +2177,296 @@ await check('bee cells update refuses a frozen key (status)', async () => {
   assert(/status/.test(result.stderr), `expected the frozen field named in stderr, got: ${result.stderr}`);
 });
 
+// ─── H2 manifest-lint, through the dispatcher: `cells add`/`cells update`
+// warn (stderr, both --json and text) on the trap shape but never refuse the
+// write or change the exit code — a separate fixture cell from demo-2 so this
+// block never disturbs demo-2's own claim/verify/cap lifecycle below. ──────
+
+await check('bee cells add fires the manifest lint WARNING on the trap shape and still succeeds', async () => {
+  const cellFixture = {
+    id: 'demo-2-lint-trap',
+    feature: 'demo2',
+    title: 'H2 lint fixture — trap shape',
+    lane: 'small',
+    action: 'H2 lint fixture only, never claimed/executed.',
+    verify: 'node scripts/release_manifest.mjs --check',
+  };
+  fs.writeFileSync(path.join(root2, 'cell-lint-trap.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const result = await runBee(['cells', 'add', '--file', 'cell-lint-trap.json', '--json']);
+  assert(result.status === 0, `the write must always succeed: exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(/WARNING/.test(result.stderr) && /demo-2-lint-trap/.test(result.stderr), `expected a WARNING naming the cell in stderr, got: ${result.stderr}`);
+  assert(/release-manifest\.json/.test(result.stderr), `expected the missing manifest path named, got: ${result.stderr}`);
+});
+
+await check('bee cells add stays silent when the manifest path is already listed in files', async () => {
+  const cellFixture = {
+    id: 'demo-2-lint-listed',
+    feature: 'demo2',
+    title: 'H2 lint fixture — manifest already listed',
+    lane: 'small',
+    action: 'H2 lint fixture only, never claimed/executed.',
+    verify: 'node scripts/release_manifest.mjs --check',
+    files: ['docs/history/codex-harness-hardening/release-manifest.json'],
+  };
+  fs.writeFileSync(path.join(root2, 'cell-lint-listed.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const result = await runBee(['cells', 'add', '--file', 'cell-lint-listed.json', '--json']);
+  assert(result.status === 0, `exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(!/WARNING/.test(result.stderr), `expected no WARNING, got stderr=${result.stderr}`);
+});
+
+await check('bee cells add stays silent when verify does not mention release_manifest', async () => {
+  const cellFixture = {
+    id: 'demo-2-lint-unrelated',
+    feature: 'demo2',
+    title: 'H2 lint fixture — unrelated verify',
+    lane: 'small',
+    action: 'H2 lint fixture only, never claimed/executed.',
+    verify: 'node -e "process.exit(0)"',
+  };
+  fs.writeFileSync(path.join(root2, 'cell-lint-unrelated.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const result = await runBee(['cells', 'add', '--file', 'cell-lint-unrelated.json', '--json']);
+  assert(result.status === 0, `exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(!/WARNING/.test(result.stderr), `expected no WARNING, got stderr=${result.stderr}`);
+});
+
+await check('bee cells update fires the manifest lint WARNING when a patch leaves the MERGED cell in the trap shape, and still succeeds', async () => {
+  // demo-2-lint-unrelated was added above with a verify that does not mention
+  // release_manifest; patching `verify` alone (files stays absent/[]) must
+  // lint the MERGED result, not the raw one-field patch.
+  const patch = { verify: 'node scripts/release_manifest.mjs --check' };
+  fs.writeFileSync(path.join(root2, 'cell-lint-update-trap.json'), JSON.stringify(patch, null, 2), 'utf8');
+  const result = await runBee(['cells', 'update', '--id', 'demo-2-lint-unrelated', '--file', 'cell-lint-update-trap.json', '--json']);
+  assert(result.status === 0, `the write must always succeed: exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(/WARNING/.test(result.stderr) && /demo-2-lint-unrelated/.test(result.stderr), `expected a WARNING naming the cell in stderr, got: ${result.stderr}`);
+});
+
+await check('bee cells update stays silent when the patched cell keeps the manifest path in files', async () => {
+  // demo-2-lint-listed already carries the manifest path in files; patching
+  // an unrelated field must keep the merged cell out of the trap shape.
+  const patch = { title: 'H2 lint fixture — manifest already listed (updated)' };
+  fs.writeFileSync(path.join(root2, 'cell-lint-update-listed.json'), JSON.stringify(patch, null, 2), 'utf8');
+  const result = await runBee(['cells', 'update', '--id', 'demo-2-lint-listed', '--file', 'cell-lint-update-listed.json', '--json']);
+  assert(result.status === 0, `exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(!/WARNING/.test(result.stderr), `expected no WARNING, got stderr=${result.stderr}`);
+});
+
+// ─── D3 judge-standard matrix, through the dispatcher: `cells add`/`cells
+// update` warn (stderr, JUDGE_STANDARD_INSUFFICIENT) on an under-specified
+// change_class shape but never refuse the write (F4); `cells cap` warns when
+// a behavior-class cap rides the deliberate_exceptions door (F5). Separate
+// fixture cells from demo-2 so this block never disturbs demo-2's own
+// claim/verify/cap lifecycle below (H2 layout precedent). ─────────────────
+
+await check('bee cells add fires JUDGE_STANDARD_INSUFFICIENT on an under-specified api-class cell and still succeeds', async () => {
+  const cellFixture = {
+    id: 'demo-2-jsw-api',
+    feature: 'demo2',
+    title: 'D3 matrix fixture — api class, no contract/integration test named',
+    lane: 'small',
+    action: 'D3 matrix fixture only, never claimed/executed.',
+    verify: 'node -e "process.exit(0)"',
+    change_class: 'api',
+  };
+  fs.writeFileSync(path.join(root2, 'cell-jsw-api.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const result = await runBee(['cells', 'add', '--file', 'cell-jsw-api.json', '--json']);
+  assert(result.status === 0, `the write must always succeed: exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(
+    /JUDGE_STANDARD_INSUFFICIENT/.test(result.stderr) && /demo-2-jsw-api/.test(result.stderr),
+    `expected a JUDGE_STANDARD_INSUFFICIENT warning naming the cell, got: ${result.stderr}`,
+  );
+});
+
+await check('bee cells add stays silent on the matrix when the verify already names the class minimum', async () => {
+  const cellFixture = {
+    id: 'demo-2-jsw-api-ok',
+    feature: 'demo2',
+    title: 'D3 matrix fixture — api class, contract test named',
+    lane: 'small',
+    action: 'D3 matrix fixture only, never claimed/executed.',
+    verify: 'node tests/test_contract.mjs',
+    change_class: 'api',
+  };
+  fs.writeFileSync(path.join(root2, 'cell-jsw-api-ok.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const result = await runBee(['cells', 'add', '--file', 'cell-jsw-api-ok.json', '--json']);
+  assert(result.status === 0, `exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(!/JUDGE_STANDARD_INSUFFICIENT/.test(result.stderr), `expected no JUDGE_STANDARD_INSUFFICIENT warning, got stderr=${result.stderr}`);
+});
+
+await check('bee cells add stays silent on the matrix for an unclassified cell (no change_class, no behavior_change:true)', async () => {
+  const cellFixture = {
+    id: 'demo-2-jsw-unclassified',
+    feature: 'demo2',
+    title: 'D3 matrix fixture — unclassified',
+    lane: 'small',
+    action: 'D3 matrix fixture only, never claimed/executed.',
+    verify: 'node -e "process.exit(0)"',
+  };
+  fs.writeFileSync(path.join(root2, 'cell-jsw-unclassified.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const result = await runBee(['cells', 'add', '--file', 'cell-jsw-unclassified.json', '--json']);
+  assert(result.status === 0, `exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(!/JUDGE_STANDARD_INSUFFICIENT/.test(result.stderr), `expected no warning for an unclassified cell, got stderr=${result.stderr}`);
+});
+
+await check('bee cells update fires JUDGE_STANDARD_INSUFFICIENT when a patch leaves the MERGED cell under-specified, and still succeeds', async () => {
+  const patch = { change_class: 'security' };
+  fs.writeFileSync(path.join(root2, 'cell-jsw-update.json'), JSON.stringify(patch, null, 2), 'utf8');
+  const result = await runBee(['cells', 'update', '--id', 'demo-2-jsw-unclassified', '--file', 'cell-jsw-update.json', '--json']);
+  assert(result.status === 0, `the write must always succeed: exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert(
+    /JUDGE_STANDARD_INSUFFICIENT/.test(result.stderr) && /demo-2-jsw-unclassified/.test(result.stderr),
+    `expected the warning naming the cell, got: ${result.stderr}`,
+  );
+});
+
+await check('bee cells cap fires JUDGE_STANDARD_INSUFFICIENT (F5) when a behavior-class cap rides deliberate_exceptions, but still succeeds', async () => {
+  const cellFixture = {
+    id: 'demo-2-jsw-exception',
+    feature: 'demo2',
+    title: 'D3 F5 fixture — behavior class riding deliberate_exceptions',
+    lane: 'small',
+    action: 'D3 F5 fixture only.',
+    verify: 'node -e "process.exit(0)"',
+    change_class: 'behavior',
+  };
+  fs.writeFileSync(path.join(root2, 'cell-jsw-exception.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const added = await runBee(['cells', 'add', '--file', 'cell-jsw-exception.json', '--json']);
+  assert(added.status === 0, `add setup failed: ${added.status}: stdout=${added.stdout} stderr=${added.stderr}`);
+  const claimed = await runBee(['cells', 'claim', '--id', 'demo-2-jsw-exception', '--worker', 'worker-jsw', '--json']);
+  assert(claimed.status === 0, `claim setup failed: ${claimed.status}: stdout=${claimed.stdout} stderr=${claimed.stderr}`);
+  const verified = await runBee([
+    'cells', 'verify', '--id', 'demo-2-jsw-exception', '--command', 'node -e 0', '--output', 'ok', '--passed', 'true', '--json',
+  ]);
+  assert(verified.status === 0, `verify setup failed: ${verified.status}: stdout=${verified.stdout} stderr=${verified.stderr}`);
+
+  const capped = await runModuleWorker(BEE_MJS, {
+    args: ['cells', 'cap', '--id', 'demo-2-jsw-exception', '--outcome', 'done', '--files', 'a.js', '--evidence-stdin', '--json'],
+    cwd: root2,
+    input: JSON.stringify({ deliberate_exceptions: ['brand-new surface, no prior behavior to characterize'] }),
+  });
+  assert(capped.status === 0, `cap must succeed: exit ${capped.status}: stdout=${capped.stdout} stderr=${capped.stderr}`);
+  assert(
+    /JUDGE_STANDARD_INSUFFICIENT/.test(capped.stderr) && /demo-2-jsw-exception/.test(capped.stderr) && /deliberate_exceptions/.test(capped.stderr),
+    `expected the F5 advisory naming the cell and the exception door, got stderr=${capped.stderr}`,
+  );
+});
+
+await check('bee cells cap stays silent on the F5 advisory for a green-row behavior-class cap (sufficient, unique red_failure_evidence)', async () => {
+  const cellFixture = {
+    id: 'demo-2-jsw-green',
+    feature: 'demo2',
+    title: 'D3 F5 fixture — behavior class, sufficient evidence',
+    lane: 'small',
+    action: 'D3 F5 fixture only.',
+    verify: 'node -e "process.exit(0)"',
+    change_class: 'behavior',
+  };
+  fs.writeFileSync(path.join(root2, 'cell-jsw-green.json'), JSON.stringify(cellFixture, null, 2), 'utf8');
+  const added = await runBee(['cells', 'add', '--file', 'cell-jsw-green.json', '--json']);
+  assert(added.status === 0, `add setup failed: ${added.status}: stdout=${added.stdout} stderr=${added.stderr}`);
+  const claimed = await runBee(['cells', 'claim', '--id', 'demo-2-jsw-green', '--worker', 'worker-jsw', '--json']);
+  assert(claimed.status === 0, `claim setup failed: ${claimed.status}: stdout=${claimed.stdout} stderr=${claimed.stderr}`);
+  const verified = await runBee([
+    'cells', 'verify', '--id', 'demo-2-jsw-green', '--command', 'node -e 0', '--output', 'ok', '--passed', 'true', '--json',
+  ]);
+  assert(verified.status === 0, `verify setup failed: ${verified.status}: stdout=${verified.stdout} stderr=${verified.stderr}`);
+
+  const capped = await runModuleWorker(BEE_MJS, {
+    args: ['cells', 'cap', '--id', 'demo-2-jsw-green', '--outcome', 'done', '--files', 'a.js', '--evidence-stdin', '--json'],
+    cwd: root2,
+    input: JSON.stringify({
+      red_failure_evidence:
+        'demo-2-jsw-green: a genuinely unique characterization of the prior failing behavior before this change, clearing the D3 floor.',
+    }),
+  });
+  assert(capped.status === 0, `cap must succeed: exit ${capped.status}: stdout=${capped.stdout} stderr=${capped.stderr}`);
+  assert(!/JUDGE_STANDARD_INSUFFICIENT/.test(capped.stderr), `expected no F5 advisory on a green-row cap, got stderr=${capped.stderr}`);
+});
+
 await check('bee cells claim --id demo-2 --worker claims it', async () => {
   const result = await runBee(['cells', 'claim', '--id', 'demo-2', '--worker', 'worker-test', '--json']);
   assert(JSON.parse(result.stdout).status === 'claimed', `expected claimed, got ${result.stdout}`);
+});
+
+// D1 (msh-2): `cells claim --id` is re-backed by the same O_EXCL claim file
+// claim-next uses — a second claim on the SAME cell must refuse loudly
+// (typed CLAIMED, non-zero exit) instead of silently double-claiming.
+await check('bee cells claim --id twice on the same cell: the second call refuses with a typed CLAIMED error, non-zero exit, cell untouched by the loser', async () => {
+  addCell(root2, {
+    id: 'claim-race-cli-1',
+    feature: 'demo2',
+    title: 'CLI claim-race fixture',
+    lane: 'small',
+    action: 'Exercise the double-claim refusal.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  const first = await runBee(['cells', 'claim', '--id', 'claim-race-cli-1', '--worker', 'worker-first', '--session-id', 'sess-cli-first', '--json']);
+  assert(first.status === 0 && JSON.parse(first.stdout).status === 'claimed', `first claim should succeed, got status=${first.status} stdout=${first.stdout}`);
+
+  const second = await runBee(['cells', 'claim', '--id', 'claim-race-cli-1', '--worker', 'worker-second', '--session-id', 'sess-cli-second']);
+  assert(second.status !== 0, `second claim on the same cell must exit non-zero, got ${second.status}`);
+  assert(/CLAIMED/.test(second.stderr), `expected a typed CLAIMED refusal on stderr, got ${second.stderr}`);
+  assert(/sess-cli-first/.test(second.stderr), `refusal should name the actual owner, got ${second.stderr}`);
+});
+
+// D3: --session-id is optional on `cells claim --id` — a call with neither
+// flag nor CLAUDE_CODE_SESSION_ID env still claims cleanly (sessionless).
+await check('bee cells claim --id with no --session-id and no CLAUDE_CODE_SESSION_ID env still claims cleanly (single-session flow unaffected)', async () => {
+  addCell(root2, {
+    id: 'claim-sessionless-cli-1',
+    feature: 'demo2',
+    title: 'CLI sessionless-claim fixture',
+    lane: 'small',
+    action: 'Exercise the sessionless claim path.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  const { CLAUDE_CODE_SESSION_ID: _drop, ...envNoSession } = process.env;
+  const result = await runModuleWorker(BEE_MJS, {
+    args: ['cells', 'claim', '--id', 'claim-sessionless-cli-1', '--worker', 'worker-sessionless', '--json'],
+    cwd: root2,
+    env: envNoSession,
+  });
+  assert(result.status === 0, `sessionless claim should succeed, got ${result.status}: ${result.stderr}`);
+  assert(JSON.parse(result.stdout).status === 'claimed', `expected claimed, got ${result.stdout}`);
+});
+
+// D3: claim-next's --session-id keeps working exactly as before; it now also
+// resolves from CLAUDE_CODE_SESSION_ID, and a call with neither is refused
+// by the handler (not silently treated as sessionless — claim-next's own
+// cross-session selection genuinely needs a session id).
+await check('bee cells claim-next: --session-id omitted resolves from CLAUDE_CODE_SESSION_ID env; omitted with no env at all is refused with a clear message', async () => {
+  addCell(root2, {
+    id: 'claim-next-env-1',
+    feature: 'demo2',
+    title: 'CLI claim-next env-fallback fixture',
+    lane: 'small',
+    action: 'Exercise the claim-next session-id env fallback.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  const withEnv = await runModuleWorker(BEE_MJS, {
+    args: ['cells', 'claim-next', '--worker', 'worker-env', '--json'],
+    cwd: root2,
+    env: { ...process.env, CLAUDE_CODE_SESSION_ID: 'sess-from-env-cli' },
+  });
+  assert(withEnv.status === 0, `claim-next with only the env session id should succeed, got ${withEnv.status}: ${withEnv.stderr}`);
+  const parsed = JSON.parse(withEnv.stdout);
+  assert(parsed.ok === true && parsed.cell.id === 'claim-next-env-1', `expected claim-next-env-1 claimed, got ${withEnv.stdout}`);
+
+  addCell(root2, {
+    id: 'claim-next-noenv-1',
+    feature: 'demo2',
+    title: 'CLI claim-next no-session fixture',
+    lane: 'small',
+    action: 'Exercise the claim-next refusal with no session source at all.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  const { CLAUDE_CODE_SESSION_ID: _drop2, ...envNoSession2 } = process.env;
+  const withoutEnv = await runModuleWorker(BEE_MJS, {
+    args: ['cells', 'claim-next', '--worker', 'worker-noenv'], // no --json: refusal lands on stderr as plain text
+    cwd: root2,
+    env: envNoSession2,
+  });
+  assert(withoutEnv.status !== 0, 'claim-next with neither --session-id nor env must refuse');
+  assert(/session-id|CLAUDE_CODE_SESSION_ID/.test(withoutEnv.stderr), `refusal should name the missing session source, got ${withoutEnv.stderr}`);
 });
 
 await check('bee cells verify --passed true (explicit "true" argument, not a bare flag) records a passing verify', async () => {
@@ -1515,9 +2477,83 @@ await check('bee cells verify --passed true (explicit "true" argument, not a bar
   assert(JSON.parse(result.stdout).trace.verify_passed === true, `expected verify_passed true, got ${result.stdout}`);
 });
 
+// D1: --signature threads from bee.mjs's CLI flag through recordVerify into
+// the trace.attempts ledger — the worker-suppliable override, end to end
+// through the dispatcher (not just the direct lib call already covered above).
+await check('bee cells verify --signature overrides the mechanical normalizer through the dispatcher, and a --passed false verify without --signature appends a ledger entry', async () => {
+  addCell(root2, {
+    id: 'ledger-cli-1',
+    feature: 'demo2',
+    title: 'CLI ledger fixture',
+    lane: 'small',
+    action: 'Exercise the --signature flag through the dispatcher.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  const failed = await runBee([
+    'cells', 'verify', '--id', 'ledger-cli-1', '--command', 'npm test', '--output', 'FAIL from dispatcher', '--passed', 'false', '--signature', 'cli-custom-sig', '--json',
+  ]);
+  assert(failed.status === 0, `exit ${failed.status}: stdout=${failed.stdout} stderr=${failed.stderr}`);
+  const afterFail = JSON.parse(failed.stdout);
+  assert(afterFail.trace.attempts.length === 1, `expected 1 ledger entry, got ${JSON.stringify(afterFail.trace.attempts)}`);
+  assert(afterFail.trace.attempts[0].failure_signature === 'cli-custom-sig', `expected the CLI --signature to win, got ${afterFail.trace.attempts[0].failure_signature}`);
+
+  const passed = await runBee([
+    'cells', 'verify', '--id', 'ledger-cli-1', '--command', 'npm test', '--output', 'ok', '--passed', 'true', '--json',
+  ]);
+  const afterPass = JSON.parse(passed.stdout);
+  assert(afterPass.trace.attempts.length === 2, `expected 2 ledger entries after the passing verify, got ${afterPass.trace.attempts.length}`);
+  assert(afterPass.trace.attempts[1].verdict === 'pass' && afterPass.trace.attempts[1].failure_signature === null, 'the passing entry carries no failure_signature');
+});
+
 await check('bee cells cap --id demo-2 caps the cell', async () => {
   const result = await runBee(['cells', 'cap', '--id', 'demo-2', '--outcome', 'dispatcher test cap', '--files', 'cell-demo-2.json', '--json']);
   assert(JSON.parse(result.stdout).status === 'capped', `expected capped, got ${result.stdout}`);
+});
+
+// D-GHF-C (GH #27.5): `cells cap --override-judge` end to end through the
+// real dispatcher — refused without the flag when the latest judge-recorded
+// verdict is NEEDS_REVISION, capped with an audited trace.judge_overrides
+// entry when the flag is supplied.
+await check('bee cells cap refuses a NEEDS_REVISION-judged cell without --override-judge, and --override-judge caps it with an audited trace.judge_overrides entry', async () => {
+  addCell(root2, {
+    id: 'judge-cli-1',
+    feature: 'demo2',
+    title: 'CLI judge-override fixture',
+    lane: 'small',
+    action: 'Exercise the --override-judge flag through the dispatcher.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  const claimed = await runBee(['cells', 'claim', '--id', 'judge-cli-1', '--worker', 'worker-judge-cli', '--json']);
+  assert(claimed.status === 0, `cells claim setup failed: ${claimed.status}: stdout=${claimed.stdout} stderr=${claimed.stderr}`);
+  const verified = await runBee(['cells', 'verify', '--id', 'judge-cli-1', '--command', 'node -e 0', '--output', 'ok', '--passed', 'true', '--json']);
+  assert(verified.status === 0, `cells verify setup failed: ${verified.status}: stdout=${verified.stdout} stderr=${verified.stderr}`);
+
+  const verdictPath = path.join(root2, 'verdict-judge-cli-1.json');
+  fs.writeFileSync(
+    verdictPath,
+    JSON.stringify({
+      schema: 'judge-verdict/1',
+      verdict: 'NEEDS_REVISION',
+      checks: [{ id: 'must_haves', status: 'FAIL', evidence: 'diff missed a CONTEXT truth' }],
+      failure_signature: 'missed-truth',
+      fixability: 'automatic',
+      confidence: 'high',
+    }),
+    'utf8',
+  );
+  const recorded = await runBee(['cells', 'judge-record', '--id', 'judge-cli-1', '--file', 'verdict-judge-cli-1.json', '--json']);
+  assert(recorded.status === 0, `cells judge-record setup failed: ${recorded.status}: stdout=${recorded.stdout} stderr=${recorded.stderr}`);
+
+  const blocked = await runBee(['cells', 'cap', '--id', 'judge-cli-1', '--outcome', 'done', '--files', 'a.js', '--json']);
+  assert(blocked.status !== 0, `cap without --override-judge must be refused, got status ${blocked.status}: stdout=${blocked.stdout}`);
+  assert(/JUDGE_REWORK_REQUIRED|NEEDS_REVISION/.test(blocked.stdout), `refusal must name the judge block (emitError writes JSON to stdout under --json), got stdout=${blocked.stdout}`);
+
+  const overridden = await runBee(['cells', 'cap', '--id', 'judge-cli-1', '--outcome', 'done', '--files', 'a.js', '--override-judge', 'accepted risk via CLI', '--json']);
+  assert(overridden.status === 0, `cap with --override-judge must succeed, got status ${overridden.status}: stdout=${overridden.stdout} stderr=${overridden.stderr}`);
+  const overriddenCell = JSON.parse(overridden.stdout);
+  assert(overriddenCell.status === 'capped', `expected capped, got ${overridden.stdout}`);
+  const overrides = overriddenCell.trace.judge_overrides;
+  assert(Array.isArray(overrides) && overrides.length === 1 && overrides[0].reason === 'accepted risk via CLI', `expected one audited judge_overrides entry, got ${JSON.stringify(overrides)}`);
 });
 
 await check('bee cells judge --id demo-2 reports no frozen-judge hits', async () => {
@@ -1528,6 +2564,102 @@ await check('bee cells judge --id demo-2 reports no frozen-judge hits', async ()
 await check('bee cells tier --id demo-2 --tier generation sets the tier', async () => {
   const result = await runBee(['cells', 'tier', '--id', 'demo-2', '--tier', 'generation', '--json']);
   assert(JSON.parse(result.stdout).tier === 'generation', `expected generation, got ${result.stdout}`);
+});
+
+// D2 + GH #27.4 (D-GHF-C): `cells reset-budget` end to end through the real
+// dispatcher — the audited door that reopens a budget-exhausted or
+// repeated-failure cell. resetCellBudget now refuses on a healthy cell, so
+// budget-cli-1 is exhausted (3 claim/verify/unclaim cycles, same pattern as
+// budget-cli-2 below) before the reset itself is exercised. Full exhaustion/
+// refusal coverage lives at the lib level (test_lib.mjs); this proves the
+// CLI wiring (registry + handler + dispatch table) threads
+// --id/--reason/--operator into resetCellBudget correctly.
+await check('bee cells reset-budget --id --reason --operator runs through the dispatcher: appends a budget_resets entry, and the reason/actor round-trip verbatim (D-GHF-C)', async () => {
+  addCell(root2, {
+    id: 'budget-cli-1',
+    feature: 'demo2',
+    title: 'CLI budget-reset fixture',
+    lane: 'small',
+    action: 'Exercise cells reset-budget through the dispatcher.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  for (let i = 0; i < 3; i += 1) {
+    const claimed = await runBee(['cells', 'claim', '--id', 'budget-cli-1', '--worker', 'w', '--session-id', `sess-cli-reset-${i}`, '--json']);
+    assert(claimed.status === 0, `claim #${i + 1} should succeed: ${claimed.stderr}`);
+    await runBee(['cells', 'verify', '--id', 'budget-cli-1', '--command', 'node -e ok', '--output', 'ok', '--passed', 'true', '--session-id', `sess-cli-reset-${i}`, '--json']);
+    await runBee(['cells', 'unclaim', '--id', 'budget-cli-1', '--session-id', `sess-cli-reset-${i}`, '--json']);
+  }
+  const blocked = await runBee(['cells', 'claim', '--id', 'budget-cli-1', '--worker', 'w', '--session-id', 'sess-cli-reset-3']);
+  assert(blocked.status !== 0, 'precondition: the door should be exhausted before reset');
+
+  const result = await runBee(['cells', 'reset-budget', '--id', 'budget-cli-1', '--reason', 'dispatcher smoke test', '--operator', 'cli-operator-1', '--json']);
+  assert(result.status === 0, `exit ${result.status}: stdout=${result.stdout} stderr=${result.stderr}`);
+  const cell = JSON.parse(result.stdout);
+  assert(Array.isArray(cell.trace.budget_resets) && cell.trace.budget_resets.length === 1, `expected one budget_resets entry, got ${JSON.stringify(cell.trace.budget_resets)}`);
+  assert(cell.trace.budget_resets[0].reason === 'dispatcher smoke test', `reason should round-trip verbatim, got ${JSON.stringify(cell.trace.budget_resets[0])}`);
+  assert(cell.trace.budget_resets[0].by_actor === 'cli-operator-1', `--operator should round-trip verbatim as by_actor, got ${JSON.stringify(cell.trace.budget_resets[0])}`);
+});
+
+await check('bee cells reset-budget --id X refuses without --reason', async () => {
+  const result = await runBee(['cells', 'reset-budget', '--id', 'budget-cli-1']);
+  assert(result.status !== 0, 'reset-budget without --reason must refuse');
+});
+
+await check('bee cells reset-budget --id X --reason refuses without an actor (no --operator, no BEE_AGENT_NAME)', async () => {
+  addCell(root2, {
+    id: 'budget-cli-1b',
+    feature: 'demo2',
+    title: 'CLI budget-reset no-actor fixture',
+    lane: 'small',
+    action: 'Exercise cells reset-budget through the dispatcher without an actor.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  for (let i = 0; i < 3; i += 1) {
+    await runBee(['cells', 'claim', '--id', 'budget-cli-1b', '--worker', 'w', '--session-id', `sess-cli-noactor-${i}`, '--json']);
+    await runBee(['cells', 'verify', '--id', 'budget-cli-1b', '--command', 'node -e ok', '--output', 'ok', '--passed', 'true', '--session-id', `sess-cli-noactor-${i}`, '--json']);
+    await runBee(['cells', 'unclaim', '--id', 'budget-cli-1b', '--session-id', `sess-cli-noactor-${i}`, '--json']);
+  }
+  // Explicit env with BEE_AGENT_NAME stripped — this refusal must not
+  // depend on whatever happens to be set in the host shell running the
+  // suite itself.
+  const strippedEnv = { ...process.env };
+  delete strippedEnv.BEE_AGENT_NAME;
+  const result = await runModuleWorker(BEE_MJS, {
+    args: ['cells', 'reset-budget', '--id', 'budget-cli-1b', '--reason', 'no actor supplied'],
+    cwd: root2,
+    env: strippedEnv,
+  });
+  assert(result.status !== 0, 'reset-budget without an actor must refuse');
+  assert(/operator|BEE_AGENT_NAME/.test(result.stderr), `refusal should name --operator or BEE_AGENT_NAME, got stderr=${result.stderr}`);
+});
+
+await check('bee cells claim --id refuses with typed CELL_BUDGET_EXHAUSTED once the default max_claims budget is spent, through the real dispatcher (D2)', async () => {
+  addCell(root2, {
+    id: 'budget-cli-2',
+    feature: 'demo2',
+    title: 'CLI budget-exhaustion fixture',
+    lane: 'small',
+    action: 'Exercise the claim-door budget refusal through the dispatcher.',
+    verify: 'node -e "process.exit(0)"',
+  });
+  for (let i = 0; i < 3; i += 1) {
+    const claimed = await runBee(['cells', 'claim', '--id', 'budget-cli-2', '--worker', 'w', '--session-id', `sess-cli-budget-${i}`, '--json']);
+    assert(claimed.status === 0, `claim #${i + 1} should succeed: ${claimed.stderr}`);
+    await runBee(['cells', 'verify', '--id', 'budget-cli-2', '--command', 'node -e ok', '--output', 'ok', '--passed', 'true', '--session-id', `sess-cli-budget-${i}`, '--json']);
+    await runBee(['cells', 'unclaim', '--id', 'budget-cli-2', '--session-id', `sess-cli-budget-${i}`, '--json']);
+  }
+  // No --json here (matches the CLAIMED-refusal precedent above): the CLI's
+  // own error() helper writes plain text to stderr only in the non-JSON
+  // branch — with --json the same error object is written to STDOUT instead
+  // (bee.mjs line ~3939), so a JSON-flagged refusal must be read from stdout.
+  const fourth = await runBee(['cells', 'claim', '--id', 'budget-cli-2', '--worker', 'w', '--session-id', 'sess-cli-budget-3']);
+  assert(fourth.status !== 0, 'the 4th claim must refuse');
+  assert(/CELL_BUDGET_EXHAUSTED/.test(fourth.stderr), `refusal should name CELL_BUDGET_EXHAUSTED, got ${fourth.stderr}`);
+
+  const reset = await runBee(['cells', 'reset-budget', '--id', 'budget-cli-2', '--reason', 'CLI test: reopening after exhaustion', '--operator', 'cli-operator-2', '--json']);
+  assert(reset.status === 0, `reset-budget should succeed: ${reset.stderr}`);
+  const reopened = await runBee(['cells', 'claim', '--id', 'budget-cli-2', '--worker', 'w', '--session-id', 'sess-cli-budget-4', '--json']);
+  assert(reopened.status === 0, `claim after reset should succeed: ${reopened.stderr}`);
 });
 
 await check('bee cells block --id demo-2 --reason blocks the cell', async () => {
@@ -1761,6 +2893,191 @@ await check('status: surfaces a report-only source field classifying the repo be
   const j = JSON.parse(r.stdout);
   assert(j.source && j.source.kind === 'project_projection', `expected source.kind project_projection, got ${JSON.stringify(j.source)}`);
   assert(typeof j.onboarding.drift === 'boolean', 'existing onboarding.drift field must remain (additive change)');
+});
+
+// ─── state advisor-ref + Gate 3 precondition (ao-4-1 / AO3 / AO13) ───────────
+
+function readStateFile(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, '.bee', 'state.json'), 'utf8'));
+}
+
+// Build an isolated repo with a state record, an active decision, and a plan.md
+// so the advisor_ref staleness anchors have something real to bind to.
+function makeAdvisorRoot({ mode = 'high-risk', feature = 'advtest', phase = 'swarming', decisionId = 'dec-1', planBody = '# plan\ncontent\n' } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-advisor-ref-'));
+  fs.mkdirSync(path.join(dir, '.bee'), { recursive: true });
+  writeJsonAtomic(path.join(dir, '.bee', 'onboarding.json'), { schema_version: '1.0', bee_version: '0.1.0' });
+  writeState(dir, {
+    ...defaultState(),
+    phase,
+    feature,
+    mode,
+    approved_gates: { context: true, shape: true, execution: false, review: false },
+  });
+  if (decisionId) {
+    fs.writeFileSync(
+      path.join(dir, '.bee', 'decisions.jsonl'),
+      `${JSON.stringify({ id: decisionId, type: 'decide', date: '2026-07-17T00:00:00.000Z', decision: 'seed', scope: 'repo' })}\n`,
+    );
+  }
+  if (planBody != null) {
+    fs.mkdirSync(path.join(dir, 'docs', 'history', feature), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'docs', 'history', feature, 'plan.md'), planBody);
+  }
+  return dir;
+}
+
+function writeDigest(dir, body) {
+  const p = path.join(dir, 'consult-digest.txt');
+  fs.writeFileSync(p, body);
+  return p;
+}
+
+// A fresh recorded ref that leaves the record non-stale (records + returns dir).
+async function recordFreshRef(dir, { advisor = 'gpt-5.6-sol', body = 'DIGEST-BODY' } = {}) {
+  const digest = writeDigest(dir, body);
+  const r = await runBee(['state', 'advisor-ref', 'record', '--advisor', advisor, '--digest-file', digest, '--json'], dir);
+  assert(r.status === 0, `recording a fresh advisor_ref should succeed: ${r.stderr}`);
+  return r;
+}
+
+await check('advisor-ref record refuses when no feature is active (idle repo), zero write', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bee-advisor-noref-'));
+  fs.mkdirSync(path.join(dir, '.bee'), { recursive: true });
+  writeJsonAtomic(path.join(dir, '.bee', 'onboarding.json'), { schema_version: '1.0', bee_version: '0.1.0' });
+  writeState(dir, defaultState()); // phase idle, feature null
+  const digest = writeDigest(dir, 'x');
+  const r = await runBee(['state', 'advisor-ref', 'record', '--advisor', 'a', '--digest-file', digest], dir);
+  assert(r.status !== 0, `expected non-zero exit, got ${r.status}`);
+  assert(/no active feature/.test(r.stderr), `expected a no-active-feature refusal, got stderr=${r.stderr}`);
+  assert(readStateFile(dir).advisor_ref === undefined, 'a refused record must not write advisor_ref');
+});
+
+await check('advisor-ref record stamps consulted_at + verb-computed anchors + digest_head (anchors never caller-supplied)', async () => {
+  const dir = makeAdvisorRoot({});
+  const digest = writeDigest(dir, 'D'.repeat(600));
+  const r = await runBee(['state', 'advisor-ref', 'record', '--advisor', 'gpt-5.6-sol', '--digest-file', digest, '--json'], dir);
+  assert(r.status === 0, `record should succeed: ${r.stderr}`);
+  const ref = readStateFile(dir).advisor_ref;
+  assert(ref && typeof ref === 'object', 'advisor_ref must be written');
+  assert(typeof ref.consulted_at === 'string' && ref.consulted_at.length > 0, 'consulted_at stamped');
+  assert(ref.feature === 'advtest', `anchor feature should be the record's feature, got ${ref.feature}`);
+  assert(ref.newest_decision_id === 'dec-1', `newest_decision_id anchor should be the active decision, got ${ref.newest_decision_id}`);
+  assert(/^[0-9a-f]{64}$/.test(ref.plan_sha256), `plan_sha256 should be a real hash, got ${ref.plan_sha256}`);
+  assert(ref.advisor === 'gpt-5.6-sol', `advisor identity round-trips, got ${ref.advisor}`);
+  assert(ref.digest_head === 'D'.repeat(500), 'digest_head is the first 500 chars of the digest');
+  // The record verb exposes no anchor flags — anchors are computed, not passed.
+  const entry = COMMAND_REGISTRY.find((e) => e.name === 'state.advisor-ref.record');
+  const props = Object.keys(entry.parameters.properties);
+  assert(!props.includes('feature') && !props.includes('newest-decision-id') && !props.includes('plan-sha256'), `record must not accept anchor flags, got ${props.join(',')}`);
+});
+
+await check('advisor-ref show round-trips a recorded ref and reports it non-stale', async () => {
+  const dir = makeAdvisorRoot({});
+  await recordFreshRef(dir);
+  const r = await runBee(['state', 'advisor-ref', 'show', '--json'], dir);
+  assert(r.status === 0, `show should succeed: ${r.stderr}`);
+  const out = JSON.parse(r.stdout);
+  assert(out.advisor_ref.advisor === 'gpt-5.6-sol', `show returns the recorded advisor, got ${JSON.stringify(out)}`);
+  assert(out.stale === false, `a fresh ref must read non-stale, got ${JSON.stringify(out)}`);
+});
+
+await check('Gate 3: high-risk execution approval THROWS without an advisor_ref, naming AO3/AO13, zero write', async () => {
+  const dir = makeAdvisorRoot({});
+  const r = await runBee(['state', 'gate', '--name', 'execution', '--approved', 'true'], dir);
+  assert(r.status !== 0, `expected non-zero exit, got ${r.status}`);
+  assert(/AO3\/AO13/.test(r.stderr) && /missing or stale/.test(r.stderr), `expected the AO3/AO13 refusal, got stderr=${r.stderr}`);
+  assert(/advisor-ref record/.test(r.stderr), `refusal must spell the FIX consult flow, got stderr=${r.stderr}`);
+  assert(readStateFile(dir).approved_gates.execution === false, 'a refused execution approval must not flip the gate');
+});
+
+await check('Gate 3: high-risk execution approval PASSES with a fresh advisor_ref', async () => {
+  const dir = makeAdvisorRoot({});
+  await recordFreshRef(dir);
+  const r = await runBee(['state', 'gate', '--name', 'execution', '--approved', 'true', '--json'], dir);
+  assert(r.status === 0, `fresh ref should let execution approve: ${r.stderr}`);
+  assert(JSON.parse(r.stdout).approved_gates.execution === true, 'execution gate approved with a fresh ref');
+});
+
+await check('AO13 staleness (1/4): a feature change alone flips the ref stale', async () => {
+  const dir = makeAdvisorRoot({});
+  await recordFreshRef(dir);
+  // Change the record's feature to one whose plan.md has IDENTICAL bytes, so
+  // ONLY the feature anchor differs (decision + plan hash unchanged).
+  const st = readStateFile(dir);
+  fs.mkdirSync(path.join(dir, 'docs', 'history', 'advtest2'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'docs', 'history', 'advtest2', 'plan.md'), '# plan\ncontent\n');
+  st.feature = 'advtest2';
+  writeJsonAtomic(path.join(dir, '.bee', 'state.json'), st);
+  const show = JSON.parse((await runBee(['state', 'advisor-ref', 'show', '--json'], dir)).stdout);
+  assert(show.stale === true, `feature change must flip stale, got ${JSON.stringify(show)}`);
+  assert(show.reasons.length === 1 && /feature changed/.test(show.reasons[0]), `only the feature reason should fire, got ${JSON.stringify(show.reasons)}`);
+  const gate = await runBee(['state', 'gate', '--name', 'execution', '--approved', 'true'], dir);
+  assert(gate.status !== 0 && /feature changed/.test(gate.stderr), `gate must refuse on feature change, got stderr=${gate.stderr}`);
+});
+
+await check('AO13 staleness (2/4): a newly logged decision alone flips the ref stale', async () => {
+  const dir = makeAdvisorRoot({});
+  await recordFreshRef(dir);
+  fs.appendFileSync(
+    path.join(dir, '.bee', 'decisions.jsonl'),
+    `${JSON.stringify({ id: 'dec-2', type: 'decide', date: '2026-07-17T01:00:00.000Z', decision: 'later', scope: 'repo' })}\n`,
+  );
+  const show = JSON.parse((await runBee(['state', 'advisor-ref', 'show', '--json'], dir)).stdout);
+  assert(show.stale === true, `a new decision must flip stale, got ${JSON.stringify(show)}`);
+  assert(show.reasons.length === 1 && /new decision was logged/.test(show.reasons[0]), `only the decision reason should fire, got ${JSON.stringify(show.reasons)}`);
+});
+
+await check('AO13 staleness (3/4): a plan.md edit alone flips the ref stale', async () => {
+  const dir = makeAdvisorRoot({});
+  await recordFreshRef(dir);
+  fs.writeFileSync(path.join(dir, 'docs', 'history', 'advtest', 'plan.md'), '# plan\nEDITED content\n');
+  const show = JSON.parse((await runBee(['state', 'advisor-ref', 'show', '--json'], dir)).stdout);
+  assert(show.stale === true, `a plan edit must flip stale, got ${JSON.stringify(show)}`);
+  assert(show.reasons.length === 1 && /plan\.md changed/.test(show.reasons[0]), `only the plan reason should fire, got ${JSON.stringify(show.reasons)}`);
+});
+
+await check('AO13 staleness (4/4): a ref predating an execution-gate revocation flips stale', async () => {
+  const dir = makeAdvisorRoot({});
+  await recordFreshRef(dir);
+  // Revoke execution (approved=false stamps gate_revoked_at.execution = now,
+  // strictly after the consult) — the ref now predates the revocation.
+  const revoke = await runBee(['state', 'gate', '--name', 'execution', '--approved', 'false', '--json'], dir);
+  assert(revoke.status === 0, `revoking execution should succeed: ${revoke.stderr}`);
+  assert(typeof JSON.parse(revoke.stdout).gate_revoked_at.execution === 'string', 'execution revocation must be stamped');
+  const show = JSON.parse((await runBee(['state', 'advisor-ref', 'show', '--json'], dir)).stdout);
+  assert(show.stale === true, `a ref older than the revocation must be stale, got ${JSON.stringify(show)}`);
+  assert(show.reasons.length === 1 && /predates the most recent execution-gate revocation/.test(show.reasons[0]), `only the revocation reason should fire, got ${JSON.stringify(show.reasons)}`);
+  const gate = await runBee(['state', 'gate', '--name', 'execution', '--approved', 'true'], dir);
+  assert(gate.status !== 0 && /predates the most recent execution-gate revocation/.test(gate.stderr), `gate must refuse a revocation-stale ref, got stderr=${gate.stderr}`);
+});
+
+await check('non-high-risk mode: execution approval never requires an advisor_ref', async () => {
+  const dir = makeAdvisorRoot({ mode: 'standard' });
+  const r = await runBee(['state', 'gate', '--name', 'execution', '--approved', 'true', '--json'], dir);
+  assert(r.status === 0, `standard mode must approve execution with no ref: ${r.stderr}`);
+  assert(JSON.parse(r.stdout).approved_gates.execution === true, 'standard-mode execution approved');
+});
+
+await check('other gates on high-risk are untouched: context approval needs no advisor_ref', async () => {
+  const dir = makeAdvisorRoot({});
+  const r = await runBee(['state', 'gate', '--name', 'context', '--approved', 'true', '--json'], dir);
+  assert(r.status === 0, `context gate must approve with no ref on high-risk: ${r.stderr}`);
+  assert(JSON.parse(r.stdout).approved_gates.context === true, 'context gate approved');
+  assert(readStateFile(dir).advisor_ref === undefined, 'context approval writes no advisor_ref');
+});
+
+await check('malformed advisor_ref reads as missing — the gate verb refuses cleanly, never crashes', async () => {
+  const dir = makeAdvisorRoot({});
+  const st = readStateFile(dir);
+  st.advisor_ref = 'not-an-object'; // hand-corrupted fixture
+  writeJsonAtomic(path.join(dir, '.bee', 'state.json'), st);
+  const gate = await runBee(['state', 'gate', '--name', 'execution', '--approved', 'true'], dir);
+  assert(gate.status !== 0, `a corrupt ref must refuse execution, got ${gate.status}`);
+  assert(/missing or stale/.test(gate.stderr), `corrupt ref reads as missing, got stderr=${gate.stderr}`);
+  assert(!/TypeError|Cannot read|is not a function/.test(gate.stderr), `must not crash on a corrupt ref, got stderr=${gate.stderr}`);
+  const show = await runBee(['state', 'advisor-ref', 'show', '--json'], dir);
+  assert(show.status === 0 && JSON.parse(show.stdout) === null, `show reads a corrupt ref as missing, got ${show.stdout}`);
 });
 
 // ─── summary ────────────────────────────────────────────────────────────────

@@ -38,6 +38,21 @@
 // --apply refreshed doctrine, helpers, and the version stamp while leaving
 // first-onboard guards in place — and still reported up_to_date.)
 //
+// --runtime claude|codex|both (default both) names which runtime(s) this
+// onboarding invocation covers. Combined with --plugin-source it drives the
+// codex-hybrid path (GH #22 P0-1): codex-cli's plugin manifest packages
+// skills only — there is no codex plugin-hook mechanism (capability matrix
+// row B1) — so `--plugin-source --runtime codex` (or `both`) ALWAYS also
+// vendors .bee/bin/hooks/ and merges .codex/hooks.json, exactly like
+// --repo-hooks's codex projection, so a plugin-first-onboarded repo never
+// reports itself onboarded while carrying zero mechanical enforcement for
+// Codex sessions. This gate reads the PASSED --runtime only, never
+// hasRepoHooksRecorded or any other recorded state (an old plugin-source
+// install carries no runtime record to infer coverage from). --runtime
+// claude leaves --plugin-source's existing behavior byte-identical (no
+// repo-local Claude hooks, no Codex files either) — plugin-first for Claude
+// relies on the plugin's own hooks, which codex-cli does not have.
+//
 // Never overwrites existing .bee/state.json, .bee/decisions.jsonl, or .bee/cells/.
 
 import { execFileSync } from "node:child_process";
@@ -57,6 +72,7 @@ const HIVE_DIR = path.dirname(SCRIPTS_DIR);
 const TEMPLATES_DIR = path.join(HIVE_DIR, "templates");
 const TEMPLATES_LIB_DIR = path.join(TEMPLATES_DIR, "lib");
 const TEMPLATES_STATUSLINE_DIR = path.join(TEMPLATES_DIR, "statusline");
+const TEMPLATES_AGENTS_DIR = path.join(TEMPLATES_DIR, "agents");
 const AGENTS_BLOCK_TEMPLATE = path.join(TEMPLATES_DIR, "AGENTS.block.md");
 const PLUGIN_ROOT = path.dirname(path.dirname(HIVE_DIR));
 const PLUGIN_HOOKS_DIR = path.join(PLUGIN_ROOT, "hooks");
@@ -102,6 +118,16 @@ const GITIGNORE_BLOCK_PATTERNS = [
   ".bee/claims/",
   ".bee/runtime/",
   ".bee/cache/",
+  // Static "doctor attest" record (g22-3, D5-REVISED): hash/version/identity
+  // pairing a human vouched for via `bee doctor attest --runtime codex` —
+  // machine-local runtime state, never tracked (a different checkout or a
+  // re-clone must re-attest, never inherit someone else's attestation).
+  ".bee/doctor-attest.json",
+  // Native transport capability probe (codex-native-transport D3/D4, advisor
+  // Δ2): a SEPARATE version+config-scoped machine-observed capability record
+  // — never doctor-attest.json, never tracked (see bee.mjs's
+  // readNativeTransportClassification/writeNativeTransportProbe).
+  ".bee/native-transport-probe.json",
 ];
 
 const HOOK_FILENAMES = [
@@ -120,6 +146,7 @@ const HOOK_FILENAMES = [
   "bee-chain-nudge.mjs",
   "bee-session-close.mjs",
   "bee-model-guard.mjs",
+  "bee-tools-logger.mjs",
 ];
 
 const DEFAULT_STATE = {
@@ -396,6 +423,23 @@ function readSourceReleaseIdentity() {
     sourceKind = classifySource({ hiveDir: HIVE_DIR, homeDir: os.homedir() }).kind;
   } catch {}
 
+  // D9 provenance: a rendered per-runtime projection (carries the render
+  // sidecar) is NEVER an authoritative source, for ANY target — its own runtime
+  // included. Refuse fail-closed with zero mutations; the canonical checkout or
+  // a plugin package is required. No target-filter semantics.
+  if (sourceKind === "rendered_projection") {
+    return {
+      version: null,
+      components: [runtimeComponent],
+      blocked: {
+        status: "blocked_no_source",
+        reason:
+          "onboarding source is a rendered per-runtime projection (carries the render provenance marker) - a projection is never an authoritative source for any target; use the canonical checkout or plugin package",
+        forceable: false,
+      },
+    };
+  }
+
   // Project/global projections intentionally do not carry package manifests.
   // They remain valid downgrade sentinels, but never become package release
   // authorities: validate only their runtime marker and let the existing
@@ -481,7 +525,13 @@ function versionLabel(v) {
 // symlink (or other non-file/dir entry) found blocks the WHOLE skill (F6 - a
 // symlinked skill dir is plausibly a developer's live checkout; writing
 // through or unlinking it would destroy real work).
-function walkSkillTree(rootDir) {
+// `transform`, when given, maps a file's raw bytes to the bytes that would be
+// materialized (the per-runtime render, D9). Source walks pass it so the drift
+// fingerprint compares render(source, runtime) against the installed bytes;
+// target walks omit it (the installed tree already holds rendered bytes). With
+// no markers in any file, render is byte-identity, so every fingerprint is
+// exactly the pre-render one and the whole sync path is unchanged.
+export function walkSkillTree(rootDir, transform) {
   const files = new Map(); // rel path ("/"-joined) -> sha256
   const dirs = [];
   let blocked = null;
@@ -503,7 +553,8 @@ function walkSkillTree(rootDir) {
         dirs.push(rel);
         walk(abs, rel);
       } else if (entry.isFile()) {
-        files.set(rel, sha256(fs.readFileSync(abs)));
+        const raw = fs.readFileSync(abs);
+        files.set(rel, sha256(transform ? transform(raw, rel) : raw));
       } else {
         blocked = { path: rel, reason: "unsupported entry type" };
         return;
@@ -514,8 +565,275 @@ function walkSkillTree(rootDir) {
   return { files, dirs, blocked };
 }
 
-function manifestFingerprint(files) {
+export function manifestFingerprint(files) {
   return JSON.stringify([...files.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+}
+
+// ---------- skill runtime rendering (D9) ----------
+//
+// A skill source file may carry runtime-scoped blocks fenced by strict,
+// full-line HTML-comment markers:
+//
+//   <!-- bee:only claude -->   ...claude-only prose...   <!-- bee:end -->
+//   <!-- bee:only codex  -->   ...codex-only prose...     <!-- bee:end -->
+//
+// render(bytes, runtime) drops the blocks not meant for `runtime`, strips every
+// marker line, and passes unmarked content through. TODAY NO SKILL FILE CARRIES
+// A MARKER, so render is byte-for-byte identity on every real file and the whole
+// sync/drift path is unchanged until content is tagged in a later cell. Byte
+// identity for the no-marker case is exact — a file whose bytes contain no
+// marker at all is returned unchanged (BOM, CRLF, final-newline state, and
+// arbitrary bytes preserved), never decoded-and-re-encoded.
+export const RENDER_RUNTIMES = ["claude", "codex"];
+// bee-render/2 (g22-4, decision D7 / advisor R5): the sidecar is now a full
+// inventory, not just a provenance stamp — {schema, target_runtime,
+// skills:[{name, sha256}]} where sha256 is a deterministic digest of that
+// skill's RENDERED file set (see skillDigest below). Single-sourced: this
+// constant plus buildRenderSidecar/skillDigest are the ONLY place the shape
+// or the hash algorithm is defined; every writer (render_plugin_skill_trees.mjs,
+// the onboarding managed-target sync below) imports them rather than
+// hand-building the object. doctor (bee.mjs, which cannot import this file -
+// see its own mirror-discipline note) duplicates the read-side algorithm by
+// hand and must be kept in lockstep with skillDigest/walkSkillTree here.
+export const RENDER_SCHEMA = "bee-render/2";
+// Provenance sidecar written at each rendered target's skills ROOT (a sibling
+// of the bee-* dirs, never inside one). source-identity classifies any skills
+// root carrying it as a rendered projection and refuses it as an onboarding
+// source for ANY target (D9 provenance).
+export const RENDER_SIDECAR = ".bee-render.json";
+
+// One skill's content digest: sha256 over manifestFingerprint's sorted
+// [relPath, sha256(fileBytes)] pairs, so it folds the same fingerprint
+// already used for drift detection (walkSkillTree + manifestFingerprint) into
+// one fixed-length hash per skill. `files` is a Map<relPath, sha256hex> (or
+// an iterable of entries) of ONE skill dir's RENDERED file tree - exactly
+// what walkSkillTree(dir, renderTransform).files already produces.
+export function skillDigest(files) {
+  const map = files instanceof Map ? files : new Map(files);
+  return sha256(manifestFingerprint(map));
+}
+
+// Builds the full bee-render/2 sidecar object (D7). `skillsDirEntries` is
+// [{name, files}] - one entry per bee-* skill dir at the rendered
+// target/tree, `files` being that skill's rendered file-hash Map (see
+// skillDigest above). Deterministic and target-independent given the same
+// (source content, runtime): callers stringify + write the result, never
+// hand-build the shape.
+export function buildRenderSidecar(targetRuntime, skillsDirEntries) {
+  const skills = skillsDirEntries
+    .map(({ name, files }) => ({ name, sha256: skillDigest(files) }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { schema: RENDER_SCHEMA, target_runtime: targetRuntime, skills };
+}
+
+// A line that begins (indentation allowed, so a mis-indented marker is caught,
+// not silently ignored) with an HTML-comment bee marker. Any line matching this
+// participates in rendering/validation; a file with none is passed through
+// untouched.
+const NEAR_MARKER_RE = /^[ \t]*<!--[ \t]*bee:(only|end)\b/;
+// The exact, canonical, column-0 markers (only trailing horizontal whitespace
+// tolerated). A NEAR line that is not one of these is malformed.
+const MARKER_ONLY_RE = /^<!-- bee:only (\S+) -->[ \t]*$/;
+const MARKER_END_RE = /^<!-- bee:end -->[ \t]*$/;
+const FRONTMATTER_DELIM_RE = /^---[ \t]*$/;
+
+function fenceChar(line) {
+  const m = line.match(/^[ \t]*(`{3,}|~{3,})/);
+  return m ? m[1][0] : null;
+}
+
+// True when the raw bytes could contain a marker at all — the cheap gate that
+// keeps the no-marker path from ever decoding (byte-identity guarantee).
+function bufHasMarkerBytes(buf) {
+  return buf.includes("bee:only") || buf.includes("bee:end");
+}
+
+// Split into [content, terminator] pairs preserving exact line endings (the
+// final line's terminator is "" when the file has no trailing newline), so
+// concatenating every pair rebuilds the input byte-for-byte.
+function splitLinesPreserving(text) {
+  const out = [];
+  const re = /\r\n|\n/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    out.push([text.slice(last, m.index), m[0]]);
+    last = m.index + m[0].length;
+  }
+  out.push([text.slice(last), ""]);
+  return out;
+}
+
+// Classify one NEAR line: {kind:"only",runtime} | {kind:"end"} | {error}.
+function classifyMarkerLine(line) {
+  const only = line.match(MARKER_ONLY_RE);
+  if (only) {
+    const label = only[1];
+    if (!RENDER_RUNTIMES.includes(label)) {
+      return { error: `unknown runtime label "${label}" (expected ${RENDER_RUNTIMES.join(" or ")})` };
+    }
+    return { kind: "only", runtime: label };
+  }
+  if (MARKER_END_RE.test(line)) {
+    return { kind: "end" };
+  }
+  return { error: `ambiguous near-marker "${line.trim()}" (not an exact full-line bee marker)` };
+}
+
+// Whole-file grammar check. Returns a list of human-readable error strings;
+// empty means the file is well-formed (or carries no markers). Enforced BEFORE
+// any mutation, per file, across the whole tree.
+export function validateSkillMarkers(text) {
+  const errors = [];
+  const lines = text.split(/\r\n|\n/);
+  // Frontmatter span: only when the very first line is a `---` delimiter.
+  let frontmatterEnd = -1;
+  if (lines.length > 0 && FRONTMATTER_DELIM_RE.test(lines[0])) {
+    for (let i = 1; i < lines.length; i += 1) {
+      if (FRONTMATTER_DELIM_RE.test(lines[i])) {
+        frontmatterEnd = i;
+        break;
+      }
+    }
+  }
+  let fence = null;
+  let openRuntime = null;
+  let openLine = -1;
+  let firstFrontmatterOpener = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    // Track code fences (outside the frontmatter span).
+    if (i > frontmatterEnd) {
+      const fc = fenceChar(line);
+      if (fence === null) {
+        if (fc) fence = fc;
+      } else if (fc === fence) {
+        fence = null;
+      }
+    }
+    if (!NEAR_MARKER_RE.test(line)) {
+      // A `---` opener appearing AFTER a marker but with the marker above the
+      // top of the file signals a marker placed before frontmatter.
+      if (firstFrontmatterOpener === -1 && FRONTMATTER_DELIM_RE.test(line) && i > 0 && frontmatterEnd === -1) {
+        firstFrontmatterOpener = i;
+      }
+      continue;
+    }
+    // Inside a fenced code block: forbidden, and never parsed as a marker.
+    if (fence !== null) {
+      errors.push(`marker inside a fenced code block at line ${i + 1}: "${line.trim()}"`);
+      continue;
+    }
+    // Inside the YAML frontmatter span: forbidden.
+    if (frontmatterEnd !== -1 && i <= frontmatterEnd) {
+      errors.push(`marker inside YAML frontmatter at line ${i + 1}: "${line.trim()}"`);
+      continue;
+    }
+    const cls = classifyMarkerLine(line);
+    if (cls.error) {
+      errors.push(`${cls.error} at line ${i + 1}`);
+      continue;
+    }
+    if (cls.kind === "only") {
+      if (openRuntime !== null) {
+        errors.push(`nested bee:only block at line ${i + 1} (block opened at line ${openLine + 1} not closed)`);
+        continue;
+      }
+      openRuntime = cls.runtime;
+      openLine = i;
+      // A well-formed marker sitting above a later frontmatter opener is a
+      // marker placed before frontmatter.
+      if (firstFrontmatterOpener !== -1) {
+        errors.push(`marker before YAML frontmatter at line ${i + 1}`);
+      }
+    } else {
+      // end
+      if (openRuntime === null) {
+        errors.push(`stray bee:end with no open block at line ${i + 1}`);
+        continue;
+      }
+      openRuntime = null;
+    }
+  }
+  if (openRuntime !== null) {
+    errors.push(`unclosed bee:only block opened at line ${openLine + 1}`);
+  }
+  return errors;
+}
+
+// Filter one file's bytes for `runtime`. On any parse ambiguity the caller has
+// already refused via validateSkillMarkers; here a file with no marker line is
+// returned byte-identical (never decoded), and a marked file is rebuilt with
+// exact line endings, its marker lines stripped and its off-runtime blocks
+// dropped.
+export function renderSkillBytes(buf, runtime) {
+  if (!bufHasMarkerBytes(buf)) {
+    return buf;
+  }
+  const text = buf.toString("utf8");
+  const lines = text.split(/\r\n|\n/);
+  if (!lines.some((line) => NEAR_MARKER_RE.test(line))) {
+    return buf; // literal "bee:only"/"bee:end" in prose, no actual marker line
+  }
+  const pairs = splitLinesPreserving(text);
+  let out = "";
+  let openRuntime = null;
+  for (const [content, term] of pairs) {
+    if (NEAR_MARKER_RE.test(content)) {
+      const cls = classifyMarkerLine(content);
+      // Validation guarantees well-formedness before render is ever reached;
+      // treat any recognized marker as a control line and strip it.
+      if (!cls.error) {
+        if (cls.kind === "only") openRuntime = cls.runtime;
+        else openRuntime = null;
+        continue;
+      }
+    }
+    if (openRuntime === null || openRuntime === runtime) {
+      out += content + term;
+    }
+  }
+  return Buffer.from(out, "utf8");
+}
+
+// Which runtime a target root renders for: repo-agents is Codex, every other
+// managed root (repo-claude, global, legacy-global) is Claude.
+function runtimeForTargetKind(kind) {
+  return kind === "repo-agents" ? "codex" : "claude";
+}
+
+// Whole-tree grammar gate (D9): scan every bee-* skill FILE in the source tree
+// and collect marker-grammar errors. Read-only; symlinked/unsupported entries
+// are left to the sync path's own block handling. A non-empty result refuses
+// the WHOLE apply with zero writes.
+function validateSkillTreeMarkers(sourceRoot) {
+  const errors = [];
+  for (const entry of listBeeSkillEntries(sourceRoot)) {
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      continue;
+    }
+    const skillDir = path.join(sourceRoot, entry.name);
+    const walk = walkSkillTree(skillDir);
+    if (walk.blocked) {
+      continue;
+    }
+    for (const rel of walk.files.keys()) {
+      const abs = path.join(skillDir, ...rel.split("/"));
+      let buf;
+      try {
+        buf = fs.readFileSync(abs);
+      } catch {
+        continue;
+      }
+      if (!bufHasMarkerBytes(buf)) {
+        continue;
+      }
+      for (const e of validateSkillMarkers(buf.toString("utf8"))) {
+        errors.push(`${entry.name}/${rel}: ${e}`);
+      }
+    }
+  }
+  return errors;
 }
 
 // The deletion domain is constructed here: only /^bee-/ entries are ever
@@ -529,6 +847,31 @@ function listBeeSkillEntries(root) {
     .readdirSync(root, { withFileTypes: true })
     .filter((entry) => SKILL_DIR_RE.test(entry.name))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+// Every plain bee-* skill dir directly under sourceRoot, rendered for
+// `runtime`, as [{name, files}] ready for buildRenderSidecar (D7). This is
+// the "should be installed" inventory: symlinked or otherwise-blocked source
+// skill dirs are excluded, because they are never synced to any target
+// either (computeSkillItems/applySyncSkill both refuse them the same way) -
+// a sidecar must never promise a skill that onboarding itself cannot write.
+// Target-independent for a given runtime (render(source, runtime) does not
+// vary per target root), so callers compute this once per runtime, not once
+// per target.
+export function sourceSkillDigestEntries(sourceRoot, runtime) {
+  const renderSource = (buf) => renderSkillBytes(buf, runtime);
+  const out = [];
+  for (const entry of listBeeSkillEntries(sourceRoot)) {
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      continue;
+    }
+    const walk = walkSkillTree(path.join(sourceRoot, entry.name), renderSource);
+    if (walk.blocked) {
+      continue;
+    }
+    out.push({ name: entry.name, files: walk.files });
+  }
+  return out;
 }
 
 // Canonical filesystem identity for case-alias detection (review P1-5): on a
@@ -617,8 +960,9 @@ function aliasBlockedItem(name, detail) {
 
 // D4/D5 drift plan items. Content difference IS drift, at any version (D5);
 // a bee-* skill absent from the anchored source IS an intentional removal (D2).
-function computeSkillItems(sourceRoot, targetRoot) {
+function computeSkillItems(sourceRoot, targetRoot, runtime) {
   const items = [];
+  const renderSource = (buf) => renderSkillBytes(buf, runtime);
   const sourceEntries = listBeeSkillEntries(sourceRoot);
   const sourceNames = new Set(sourceEntries.map((entry) => entry.name));
   const aliasCollisions = detectAliasCollisions(sourceNames, targetRoot);
@@ -643,7 +987,7 @@ function computeSkillItems(sourceRoot, targetRoot) {
     if (!entry.isDirectory()) {
       continue; // stray bee-* file in source: not a skill dir
     }
-    const sourceWalk = walkSkillTree(path.join(sourceRoot, name));
+    const sourceWalk = walkSkillTree(path.join(sourceRoot, name), renderSource);
     if (sourceWalk.blocked) {
       items.push({
         action: "blocked_symlink",
@@ -884,7 +1228,7 @@ function computeSkillSyncTarget({
       // still carries its computed items BEFORE any --force-downgrade.
       // `target` on every item names the root it belongs to; `path` stays
       // target_root-relative (scope semantics unchanged).
-      target.items = computeSkillItems(sourceRoot, targetRoot).map((item) => ({
+      target.items = computeSkillItems(sourceRoot, targetRoot, runtimeForTargetKind(kind)).map((item) => ({
         ...item,
         target: kind,
       }));
@@ -1027,7 +1371,7 @@ function computeLegacyGlobalRefresh({ sourceRoot, realSource, realRepo, sourceVe
   // remove pass (never delete) and its create case (never create an absent
   // dir), relabel a drifted managed dir as refresh_legacy_global_skill, and keep
   // any per-skill block as a loud skip.
-  for (const item of computeSkillItems(sourceRoot, globalRoot)) {
+  for (const item of computeSkillItems(sourceRoot, globalRoot, "claude")) {
     if (item.action === "remove_skill") {
       continue; // never delete from the legacy global root
     }
@@ -1064,8 +1408,8 @@ function computeSkillSync(repoRoot, { globalSkills = false } = {}) {
     blocked: null, // blocked-first aggregate: { status, reason, forceable, versions }
   };
 
-  const blockAll = (reason) => {
-    const blocked = { status: "blocked_no_source", reason, forceable: false };
+  const blockAll = (reason, status = "blocked_no_source") => {
+    const blocked = { status, reason, forceable: false };
     result.targets = targetSpecs.map(({ kind, target_root }) => ({
       kind,
       target_root,
@@ -1091,6 +1435,16 @@ function computeSkillSync(repoRoot, { globalSkills = false } = {}) {
   if (!identityOk) {
     return blockAll(
       "no authoritative skill source: the running script's tree failed the bee-hive realpath identity check",
+    );
+  }
+
+  // Whole-tree marker-grammar gate (D9): a malformed marker anywhere refuses the
+  // ENTIRE apply with zero writes, BEFORE any per-target resolution or mutation.
+  const markerErrors = validateSkillTreeMarkers(sourceRoot);
+  if (markerErrors.length > 0) {
+    return blockAll(
+      `skill source markers are malformed - refusing to render, zero writes: ${markerErrors.join("; ")}`,
+      "blocked_render",
     );
   }
 
@@ -1157,13 +1511,14 @@ function writeFileAtomicRandom(filePath, buffer) {
 
 // Mirror one bee-* skill dir into the target (D4/D5). Re-verifies the symlink
 // policy at apply time so plan-to-apply races fail closed.
-function applySyncSkill(sourceRoot, targetRoot, name) {
+function applySyncSkill(sourceRoot, targetRoot, name, runtime) {
+  const renderSource = (buf) => renderSkillBytes(buf, runtime);
   const sourceDir = path.join(sourceRoot, name);
   const sourceStat = lstatIfExists(sourceDir);
   if (!sourceStat || sourceStat.isSymbolicLink() || !sourceStat.isDirectory()) {
     return { blocked: `source ${name} is not a plain directory - skipped` };
   }
-  const sourceWalk = walkSkillTree(sourceDir);
+  const sourceWalk = walkSkillTree(sourceDir, renderSource);
   if (sourceWalk.blocked) {
     return {
       blocked: `source ${name} contains a ${sourceWalk.blocked.reason} at ${sourceWalk.blocked.path} - skipped`,
@@ -1234,7 +1589,7 @@ function applySyncSkill(sourceRoot, targetRoot, name) {
     }
     writeFileAtomicRandom(
       path.join(targetDir, ...rel.split("/")),
-      fs.readFileSync(path.join(sourceDir, ...rel.split("/"))),
+      renderSource(fs.readFileSync(path.join(sourceDir, ...rel.split("/")))),
     );
   }
   return { blocked: null };
@@ -1356,6 +1711,172 @@ function statuslineOptIn(repoRoot) {
     /\$\{?CLAUDE_PROJECT_DIR[^"'\s{}]*\}?\/\.claude\/statusline-command\.sh/.test(command) ||
     /(^|[\s"'=(])\.claude\/statusline-command\.sh/.test(command)
   );
+}
+
+// ---------- bee agent files (config-rendered, AO10-safe flat sync) ----------
+// Pinned agent types (advisor-and-orchestration, Slice 3B, AO5/AO10/AO11):
+// each type's frontmatter `model:` is rendered from the HOST repo's own
+// models.claude tier config at sync time, never hand-pinned - a static
+// `model: sonnet` in the template output would drift the moment an owner
+// reconfigures a tier (AO5: config is the authority). Sync target is
+// <repo>/.claude/agents/bee-*.md, a flat managed-file step of the SAME CLASS
+// as the AGENTS.md block / settings.json hook merge above - deliberately NOT
+// added to REPO_SKILL_TARGETS (AO10): an agents root has no bee-hive
+// directory for the three-version onboarding preflight to resolve a version
+// from, so joining it there would resolve "unknown" and brick onboarding
+// non-forceably on every host. Codex gets no agent files at all (AO11): Codex
+// has no per-agent model selection (DEFAULT_MODELS.codex is all-null by
+// design, templates/lib/state.mjs), so a `model:` pin would be a no-op file
+// implying an enforcement that does not exist for that runtime.
+function listTemplateAgents() {
+  if (!fs.existsSync(TEMPLATES_AGENTS_DIR)) {
+    return [];
+  }
+  return fs
+    .readdirSync(TEMPLATES_AGENTS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md.tmpl"))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+// gather <- generation, extract <- extraction, review <- review (plan.md
+// Slice 3B item 1). Every template basename here must have an entry; a
+// template with no mapping is a planning defect, not a silent skip.
+const AGENT_TIER_BY_NAME = {
+  "bee-gather": "generation",
+  "bee-extract": "extraction",
+  "bee-review": "review",
+};
+
+// Deliberately duplicated, not imported: this script never import-depends on
+// templates/lib/state.mjs's exports (see the STALE_ADVISOR_KEY_WARNING
+// comment below, same discipline) - the skill-sync test fixture's fake
+// state.mjs is minimal by design, and importing modelForTier/resolveTier here
+// would break against it. AGENT_TIER_DEFAULTS_CLAUDE is text-pinned against
+// state.mjs's DEFAULT_MODELS.claude by test_onboard_bee.mjs's no-drift check
+// (same pattern as the COMMAND_KEYS / STALE_ADVISOR_KEY_WARNING checks).
+const AGENT_TIER_DEFAULTS_CLAUDE = { extraction: "haiku", generation: "sonnet", review: "opus" };
+
+// Mirrors templates/lib/state.mjs normalizeTierValue (state.mjs:159-175),
+// narrowed to what agent-file rendering needs: a resolved model NAME string,
+// `undefined` for "no override" (default stands, same as normalizeTierValue),
+// `null` for an EXPLICIT null override, or the CLI_TIER_SENTINEL for a
+// cli-shaped override. The three non-string outcomes are kept distinct
+// (rather than all collapsing to null) because resolveAgentTierModel's
+// review->generation fallback fires ONLY on an explicit null, exactly like
+// resolveTier (state.mjs:1146-1148) - a cli-shaped review must resolve to
+// "no model" WITHOUT falling back to generation's model.
+const CLI_TIER_SENTINEL = Symbol("cli-tier");
+function normalizeAgentTierValueLocal(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value === null) return null;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (value.kind === "cli") return CLI_TIER_SENTINEL; // no model name to pin
+    if (value.kind === undefined && typeof value.model === "string" && value.model.trim()) {
+      return value.model.trim();
+    }
+  }
+  return undefined; // invalid shape - default for that slot stands
+}
+
+// Resolve one tier -> model name for a TARGET repo's own .bee/config.json,
+// claude runtime only (Codex gets no agent files - AO11). Mirrors
+// resolveTier's tier-only contract (state.mjs:1140-1173): a string or
+// {model,...} override resolves to that name; an explicit null or cli-shaped
+// value resolves to null (no agent file - AO5: a slot naming no real model
+// has nothing honest to pin); an unset slot falls back to
+// AGENT_TIER_DEFAULTS_CLAUDE, and an unset `review` additionally falls back
+// to the resolved `generation` value (decision 0021) exactly as resolveTier
+// does - but only when config is silent; an EXPLICIT `review: null` is
+// honored as "no agent file", never coerced back to generation.
+function resolveAgentTierModel(repoRoot, tier) {
+  const config = readJsonIfExists(path.join(repoRoot, ".bee", "config.json"));
+  const rawClaude =
+    config &&
+    typeof config === "object" &&
+    !Array.isArray(config) &&
+    config.models &&
+    typeof config.models === "object" &&
+    !Array.isArray(config.models)
+      ? config.models.claude
+      : null;
+  const resolved = { ...AGENT_TIER_DEFAULTS_CLAUDE };
+  if (rawClaude && typeof rawClaude === "object" && !Array.isArray(rawClaude)) {
+    for (const slot of Object.keys(AGENT_TIER_DEFAULTS_CLAUDE)) {
+      const value = normalizeAgentTierValueLocal(rawClaude[slot]);
+      if (value !== undefined) {
+        resolved[slot] = value;
+      }
+    }
+  }
+  let value = resolved[tier];
+  if (value === null && tier === "review") {
+    value = resolved.generation; // explicit null only, exactly like resolveTier
+  }
+  return typeof value === "string" ? value : null;
+}
+
+function renderAgentTemplate(agentName, model) {
+  const source = fs.readFileSync(path.join(TEMPLATES_AGENTS_DIR, `${agentName}.md.tmpl`), "utf8");
+  return source.split("{{TIER_MODEL}}").join(model);
+}
+
+// Plan the flat .claude/agents/bee-*.md sync for one repo: byte-compare each
+// rendered template against the target, same discipline as copy_helper /
+// copy_lib above. A tier that resolves to null (cli-shaped or explicitly
+// unset) skips the render and, if a stale copy exists from a prior config,
+// removes it - an agent type must name a real model (must_haves: "a
+// cli-shaped or null tier slot skips (and removes) its agent file").
+function computeAgentFilePlan(repoRoot) {
+  const items = [];
+  for (const tmplName of listTemplateAgents()) {
+    const agentName = tmplName.replace(/\.md\.tmpl$/, "");
+    const tier = AGENT_TIER_BY_NAME[agentName];
+    const relPath = `.claude/agents/${agentName}.md`;
+    const target = path.join(repoRoot, ".claude", "agents", `${agentName}.md`);
+    const model = tier ? resolveAgentTierModel(repoRoot, tier) : null;
+    if (model) {
+      const rendered = renderAgentTemplate(agentName, model);
+      if (readTextIfExists(target) !== rendered) {
+        items.push({ action: "sync_agent_file", path: relPath, agent: agentName });
+      }
+    } else if (fs.existsSync(target)) {
+      items.push({ action: "remove_agent_file", path: relPath, agent: agentName });
+    }
+  }
+  return items;
+}
+
+// The sync's own version marker (same class as the settings.json hook merge
+// marker), recorded in .bee/onboarding.json as a sibling of `managed`:
+// {bee_version, files, rendered_from: {tier: model}}. Computed post-apply
+// (called after the apply loop, once .claude/agents/ reflects the new
+// state) so `files` names what is ACTUALLY present, not merely planned.
+// Codex asymmetry (AO11) is recorded inline, never a separate file.
+function computeAgentsSyncRecord(repoRoot, beeVersion) {
+  const files = [];
+  const renderedFrom = {};
+  for (const tmplName of listTemplateAgents()) {
+    const agentName = tmplName.replace(/\.md\.tmpl$/, "");
+    const tier = AGENT_TIER_BY_NAME[agentName];
+    const model = tier ? resolveAgentTierModel(repoRoot, tier) : null;
+    if (model) {
+      files.push(`.claude/agents/${agentName}.md`);
+      renderedFrom[tier] = model;
+    }
+  }
+  return {
+    bee_version: beeVersion,
+    files,
+    rendered_from: renderedFrom,
+    codex: {
+      agents: [],
+      note:
+        "Codex has no per-agent model selection (DEFAULT_MODELS.codex is all-null by design, " +
+        "templates/lib/state.mjs) - tiers are enforced as a read budget + output cap in the " +
+        "worker prompt instead. No agent files are rendered under .agents/ (AO11).",
+    },
+  };
 }
 
 function listPluginHooks() {
@@ -1537,11 +2058,12 @@ function renderRepoHookEntries() {
     ],
     UserPromptSubmit: [{ hooks: [entry("bee-prompt-context.mjs")] }],
     PreToolUse: [
-      { matcher: "Edit|Write|MultiEdit|Bash|Read|Glob|Grep", hooks: [entry("bee-write-guard.mjs")] },
+      { matcher: "Edit|Write|MultiEdit|Bash|Read|Glob|Grep|AskUserQuestion", hooks: [entry("bee-write-guard.mjs")] },
       { matcher: "Agent|Task", hooks: [entry("bee-model-guard.mjs")] },
     ],
     PostToolUse: [
-      { matcher: "TaskCreate|TaskUpdate|TodoWrite", hooks: [entry("bee-state-sync.mjs")] },
+      { matcher: "update_plan|TaskCreate|TaskUpdate|TodoWrite", hooks: [entry("bee-state-sync.mjs")] },
+      { hooks: [entry("bee-tools-logger.mjs")] },
     ],
     SubagentStop: [{ hooks: [entry("bee-state-sync.mjs"), entry("bee-chain-nudge.mjs")] }],
     // PreCompact mirrors the plugin hooks.json (decision 0017): an unflushed
@@ -1587,8 +2109,10 @@ function mergeRepoSettings(settingsPath) {
 // (the Claude-only variable above), so every command resolves the git root
 // from the session cwd and fails open VISIBLY when there is none. Two pinned
 // differences from renderRepoHookEntries(), both from hooks/catalog.mjs:
-//   - bee-model-guard.mjs is Claude-only (ALLOWED_DIFFERENCES: Codex does not
-//     expose collaboration spawn through PreToolUse) and is never wired here.
+//   - bee-model-guard.mjs is wired on a DIFFERENT matcher per runtime: Claude
+//     guards Agent|Task, Codex guards spawn_agent (the collaboration-spawn tool
+//     name Codex exposes through PreToolUse — capability-matrix row D1). Same
+//     handler, only the matcher differs (ALLOWED_DIFFERENCES).
 //   - each entry carries a statusMessage (Codex TUI shows it while running).
 
 const CODEX_TRANSPORT_DIAGNOSTIC = "bee: hook transport unavailable (no git root)";
@@ -1606,6 +2130,13 @@ const CODEX_TRANSPORT_DIAGNOSTIC = "bee: hook transport unavailable (no git root
 // makes a repo the catalog's owner rather than on where the script happens to run from.
 function repoOwnsHookCatalog(repoRoot) {
   return fs.existsSync(path.join(repoRoot, "hooks", "catalog.mjs"));
+}
+
+// GH #22 P0-1: does the PASSED --runtime cover Codex? "both" (the default)
+// and "codex" do; "claude" does not. Never reads any recorded/sticky state -
+// see the --runtime block comment at the top of this file for why.
+function runtimeCoversCodex(runtime) {
+  return runtime === "codex" || runtime === "both";
 }
 
 function codexHookCommand(fileName) {
@@ -1632,14 +2163,25 @@ function renderCodexHookEntries() {
     UserPromptSubmit: [{ hooks: [entry("bee-prompt-context.mjs", "bee: phase reminder")] }],
     PreToolUse: [
       {
-        matcher: "Edit|Write|MultiEdit|Bash|Read|Glob|Grep",
+        matcher: "Edit|Write|MultiEdit|Bash|Read|Glob|Grep|AskUserQuestion",
         hooks: [entry("bee-write-guard.mjs", "bee: write guard")],
+      },
+      {
+        // Codex-native spawn guard (codex-native-runtime-v2 D4): Codex exposes
+        // agent spawns as tool_name "spawn_agent"; bee-model-guard.mjs runs an
+        // isolated Codex branch on the observed envelope. Claude wires the same
+        // handler on Agent|Task (renderRepoHookEntries) — matcher differs only.
+        matcher: "spawn_agent",
+        hooks: [entry("bee-model-guard.mjs", "bee: model-tier guard")],
       },
     ],
     PostToolUse: [
       {
-        matcher: "TaskCreate|TaskUpdate|TodoWrite",
+        matcher: "update_plan|TaskCreate|TaskUpdate|TodoWrite",
         hooks: [entry("bee-state-sync.mjs", "bee: state sync")],
+      },
+      {
+        hooks: [entry("bee-tools-logger.mjs", "bee: tools logger")],
       },
     ],
     SubagentStart: [
@@ -1707,6 +2249,41 @@ function mergeCodexHooks(hooksPath) {
     text: `${JSON.stringify({ ...existing, hooks: merged }, null, 2)}\n`,
     changed,
   };
+}
+
+// GH #22 P0-1 / advisor R3: a typed preflight for the codex-hybrid write
+// path, checked BEFORE applyPlan's main loop ever runs (see the codexHybrid
+// block there). Without it, a `.codex` path occupied by a plain file (or a
+// `.bee/bin/hooks` path occupied by a plain file) would throw a raw
+// ENOTDIR/EEXIST out of writeFileAtomic's mkdirSync deep inside the apply
+// loop, AFTER skills may already have been synced - an untyped {error:...}
+// escape hatch that reports a broken partial apply as a generic crash rather
+// than a named refusal, and (fail-closed requirement) must never let skills
+// be reported "applied" without the hooks that make them mechanically
+// enforced for Codex. Returns null when both target paths are writable
+// (absent or already a plain directory); otherwise returns a blocked
+// descriptor shaped exactly like skillSync.blocked ({status, reason,
+// forceable}) so main()'s existing blocked-result rendering handles it with
+// zero new payload shapes. Never forceable: there is no downgrade to force
+// through a filesystem collision.
+function codexHookWriteBlocker(repoRoot) {
+  const checks = [
+    { target: path.join(repoRoot, ".bee", "bin", "hooks"), label: ".bee/bin/hooks" },
+    { target: path.join(repoRoot, ".codex"), label: ".codex" },
+  ];
+  for (const { target, label } of checks) {
+    const stat = lstatIfExists(target);
+    if (stat && !stat.isDirectory()) {
+      return {
+        status: "blocked",
+        reason:
+          `codex hook apply refused: "${label}" exists and is not a directory. FIX: remove or rename it, ` +
+          "then retry the hybrid apply, or pass --distribution repo-copy for a plain repo-local install instead.",
+        forceable: false,
+      };
+    }
+  }
+  return null;
 }
 
 // ---------- codex user config status line (machine-level) ----------
@@ -1866,8 +2443,23 @@ function blockedSourceIdentitySkillSync(repoRoot, options, identity) {
   };
 }
 
-function computePlan(repoRoot, { repoHooks = false, claudeMd = true, globalSkills = false, syncSkills = true } = {}) {
+function computePlan(
+  repoRoot,
+  {
+    repoHooks = false,
+    claudeMd = true,
+    globalSkills = false,
+    syncSkills = true,
+    pluginSource = false,
+    runtime = "both",
+  } = {},
+) {
   const plan = [];
+  // GH #22 P0-1: whether THIS run's --plugin-source + --runtime combination
+  // covers the codex-hybrid hook path. Computed once, read by both the plan
+  // block below and the managed-set gate (buildManagedVersions/subsetManaged)
+  // so the two can never drift from each other.
+  const codexHybrid = pluginSource && runtimeCoversCodex(runtime);
   const releaseIdentity = readSourceReleaseIdentity();
   if (releaseIdentity.blocked) {
     return {
@@ -1881,6 +2473,7 @@ function computePlan(repoRoot, { repoHooks = false, claudeMd = true, globalSkill
         { globalSkills, syncSkills },
         releaseIdentity,
       ),
+      codexHybrid,
     };
   }
   const beeVersion = releaseIdentity.version;
@@ -2028,6 +2621,36 @@ function computePlan(repoRoot, { repoHooks = false, claudeMd = true, globalSkill
     }
   }
 
+  // 5a. codex-hybrid hooks (plugin-first + --runtime covers codex, GH #22
+  // P0-1): repoHooks is ALWAYS false under --plugin-source (see options
+  // below / main()), so this is a separately-gated path, never folded into
+  // the `if (repoHooks)` block above — it fires purely off codexHybrid
+  // (computed from the PASSED --runtime, above). Reuses the exact same
+  // projection (listPluginHooks/mergeCodexHooks/renderCodexHookEntries) the
+  // --repo-hooks path uses, so the two mechanisms can never drift from each
+  // other, and the same repoOwnsHookCatalog self-skip applies (bee's own
+  // repo is the catalog's authority, never a projection target). Never
+  // touches .claude/settings.json: Claude's own plugin hooks already work
+  // under plugin-first (only Codex lacks a plugin-hook mechanism), so no
+  // repo-local Claude entries are written here.
+  if (codexHybrid && !repoOwnsHookCatalog(repoRoot)) {
+    for (const name of listPluginHooks()) {
+      const source = fs.readFileSync(path.join(PLUGIN_HOOKS_DIR, name), "utf8");
+      const target = path.join(repoRoot, ".bee", "bin", "hooks", name);
+      if (readTextIfExists(target) !== source) {
+        plan.push({ action: "copy_repo_hook", path: `.bee/bin/hooks/${name}` });
+      }
+    }
+    const codexHooksPath = path.join(repoRoot, ".codex", "hooks.json");
+    try {
+      if (mergeCodexHooks(codexHooksPath).changed) {
+        plan.push({ action: "merge_codex_hooks", path: ".codex/hooks.json" });
+      }
+    } catch {
+      plan.push({ action: "merge_codex_hooks", path: ".codex/hooks.json" });
+    }
+  }
+
   // 5c. Codex user-config status line (machine-level, add-only): the item's
   // path is display-only — the apply case resolves the real user-config path
   // itself and never joins it under repoRoot.
@@ -2048,16 +2671,23 @@ function computePlan(repoRoot, { repoHooks = false, claudeMd = true, globalSkill
     }
   }
 
+  // 5d. bee agent files (config-rendered, AO10-safe flat sync - see the
+  // block comment above computeAgentFilePlan): NOT part of REPO_SKILL_TARGETS
+  // and not gated by any opt-in - every repo with a configured tier gets its
+  // agent files, exactly like the AGENTS.md block above.
+  plan.push(...computeAgentFilePlan(repoRoot));
+
   // 6. onboarding.json drift (managed versions)
   const statusline = statuslineOptIn(repoRoot);
-  const desiredManaged = buildManagedVersions(renderedBlock, renderedGitignoreBlock, repoHooks, statusline);
+  const desiredManaged = buildManagedVersions(
+    renderedBlock, renderedGitignoreBlock, repoHooks, statusline, codexHybrid);
   const onboarding = readJsonIfExists(path.join(repoRoot, ".bee", "onboarding.json"));
   const onboardingCurrent =
     onboarding &&
     onboarding.schema_version === ONBOARDING_SCHEMA_VERSION &&
     onboarding.bee_version === beeVersion &&
-    JSON.stringify(subsetManaged(onboarding.managed, repoHooks, statusline)) ===
-      JSON.stringify(subsetManaged(desiredManaged, repoHooks, statusline));
+    JSON.stringify(subsetManaged(onboarding.managed, repoHooks, statusline, codexHybrid)) ===
+      JSON.stringify(subsetManaged(desiredManaged, repoHooks, statusline, codexHybrid));
   if (!onboardingCurrent) {
     plan.push({ action: "write_onboarding", path: ".bee/onboarding.json" });
   }
@@ -2081,7 +2711,7 @@ function computePlan(repoRoot, { repoHooks = false, claudeMd = true, globalSkill
     }
   }
 
-  return { plan, beeVersion, renderedBlock, renderedGitignoreBlock, desiredManaged, skillSync };
+  return { plan, beeVersion, renderedBlock, renderedGitignoreBlock, desiredManaged, skillSync, codexHybrid };
 }
 
 // Legacy-global version-parity refresh items are a best-effort side pass over
@@ -2096,7 +2726,24 @@ function coreChangesNeeded(plan) {
   return plan.some((item) => item.action !== "refresh_legacy_global_skill");
 }
 
-function buildManagedVersions(renderedBlock, renderedGitignoreBlock, repoHooks, statusline = false) {
+// Shared by the --repo-hooks managed.repo_hooks map and the codex-hybrid
+// managed.codex_hooks map below (GH #22 P0-1): both track the identical
+// vendored-script + .codex/hooks.json projection, so one render function
+// keeps them from ever drifting apart.
+function buildHookVersions() {
+  const hooks = {};
+  for (const name of listPluginHooks()) {
+    hooks[name] = sha256(fs.readFileSync(path.join(PLUGIN_HOOKS_DIR, name), "utf8"));
+  }
+  // Pseudo-entry: the desired Codex projection rides the same managed map,
+  // so a render change here surfaces as onboarding drift like any hook edit.
+  hooks[".codex/hooks.json"] = sha256(JSON.stringify(renderCodexHookEntries()));
+  return hooks;
+}
+
+function buildManagedVersions(
+  renderedBlock, renderedGitignoreBlock, repoHooks, statusline = false, codexHybrid = false,
+) {
   const helpers = {};
   for (const name of listTemplateHelpers()) {
     helpers[name] = hashFile(path.join(TEMPLATES_DIR, name));
@@ -2112,14 +2759,16 @@ function buildManagedVersions(renderedBlock, renderedGitignoreBlock, repoHooks, 
     lib,
   };
   if (repoHooks) {
-    const hooks = {};
-    for (const name of listPluginHooks()) {
-      hooks[name] = sha256(fs.readFileSync(path.join(PLUGIN_HOOKS_DIR, name), "utf8"));
-    }
-    // Pseudo-entry: the desired Codex projection rides the same managed map,
-    // so a render change here surfaces as onboarding drift like any hook edit.
-    hooks[".codex/hooks.json"] = sha256(JSON.stringify(renderCodexHookEntries()));
-    managed.repo_hooks = hooks;
+    managed.repo_hooks = buildHookVersions();
+  }
+  if (codexHybrid) {
+    // Advisor R5: a DISTINCT key from repo_hooks — repo_hooks means "this
+    // repo opted into the full --repo-hooks install" (Claude + Codex, sticky
+    // via hasRepoHooksRecorded); codex_hooks means only the codex-hybrid
+    // projection is active (no Claude repo-local entries). Conflating the
+    // two would make hasRepoHooksRecorded misfire on a plugin-first repo
+    // that only ever asked for Codex coverage.
+    managed.codex_hooks = buildHookVersions();
   }
   if (statusline) {
     const pair = {};
@@ -2146,8 +2795,11 @@ function hasRepoHooksRecorded(repoRoot) {
 
 // Compare only the parts we manage in this run: without --repo-hooks, ignore
 // any repo_hooks entry recorded by a previous --repo-hooks run; without the
-// statusline opt-in, ignore any statusline entry the same way.
-function subsetManaged(managed, repoHooks, statusline = false) {
+// statusline opt-in, ignore any statusline entry the same way. Without
+// codexHybrid, ignore any codex_hooks entry a previous hybrid run recorded
+// (advisor R5) — a claude-only run must never report codex_hooks drift, nor
+// treat one as present to preserve.
+function subsetManaged(managed, repoHooks, statusline = false, codexHybrid = false) {
   const src = managed && typeof managed === "object" ? managed : {};
   const out = {
     agents_block: src.agents_block || null,
@@ -2158,25 +2810,86 @@ function subsetManaged(managed, repoHooks, statusline = false) {
   if (repoHooks) {
     out.repo_hooks = src.repo_hooks || {};
   }
+  if (codexHybrid) {
+    out.codex_hooks = src.codex_hooks || {};
+  }
   if (statusline) {
     out.statusline = src.statusline || {};
   }
   return out;
 }
 
+// GH #22 P0-1 / advisor R6 (point 6): a repo that once recorded a full
+// --repo-hooks install (Claude + Codex repo-local wiring, sticky via
+// hasRepoHooksRecorded) and is now re-onboarded as --plugin-source no longer
+// gets that record silently carried forward (see applyPlan's onboarding.json
+// write) — repoHooks is unconditionally false under --plugin-source (main()
+// options), so the block that WRITES .claude/settings.json entries never
+// runs this pass, and plugin-first distribution cleanup (plugin_distribution.mjs)
+// is expected to strip the stale Claude entries it left behind (Claude's own
+// plugin hooks take over). Silently dropping the record would be honest
+// about the mechanism but dishonest about the SURPRISE: the human opted into
+// full repo-local coverage once and it just changed shape underneath them.
+// This notice makes that transition visible exactly once, naming which
+// coverage survives (codex-hybrid, when --runtime covers codex) and which
+// does not (Claude repo-local entries, always; Codex too when --runtime
+// claude was passed without codex/both).
+function repoHooksTransitionNotices(repoRoot, { pluginSource, codexHybrid }) {
+  if (!pluginSource || !hasRepoHooksRecorded(repoRoot)) {
+    return [];
+  }
+  if (codexHybrid) {
+    return [
+      "This repo previously opted into --repo-hooks (full repo-local Claude + Codex hook wiring). " +
+        "Onboarding as --plugin-source retires the repo-local Claude entries in .claude/settings.json " +
+        "(Claude's own plugin hooks take over) and keeps Codex mechanically enforced through the " +
+        "codex-hybrid .codex/hooks.json projection instead — no action needed.",
+    ];
+  }
+  return [
+    "This repo previously opted into --repo-hooks (full repo-local Claude + Codex hook wiring). " +
+      "Onboarding as --plugin-source with --runtime claude retires ALL repo-local hook entries, " +
+      "including Codex's — pass --runtime codex or --runtime both to keep Codex mechanically " +
+      "enforced via the codex-hybrid path, or use --distribution repo-copy to keep the full " +
+      "repo-local install as-is.",
+  ];
+}
+
 // ---------- apply ----------
 
 function applyPlan(
   repoRoot,
-  { repoHooks = false, claudeMd = true, globalSkills = false, syncSkills = true, forceDowngrade = false } = {},
+  {
+    repoHooks = false,
+    claudeMd = true,
+    globalSkills = false,
+    syncSkills = true,
+    forceDowngrade = false,
+    pluginSource = false,
+    runtime = "both",
+  } = {},
 ) {
-  const { plan, beeVersion, renderedBlock, renderedGitignoreBlock, desiredManaged, skillSync } =
+  const { plan, beeVersion, renderedBlock, renderedGitignoreBlock, desiredManaged, skillSync, codexHybrid } =
     computePlan(repoRoot, {
       repoHooks,
       claudeMd,
       globalSkills,
       syncSkills,
+      pluginSource,
+      runtime,
     });
+
+  // GH #22 P0-1 / advisor R3: the codex-hybrid write preflight. Checked
+  // BEFORE the skillSync.blocked branch below and before any write anywhere
+  // — fail-closed (point 3): skills must never be reported applied without
+  // the hooks that make them mechanically enforced for Codex, so a blocked
+  // hook write refuses the WHOLE apply, typed exactly like skillSync.blocked.
+  if (codexHybrid && !repoOwnsHookCatalog(repoRoot)) {
+    const hookBlock = codexHookWriteBlocker(repoRoot);
+    if (hookBlock) {
+      return { blocked: hookBlock, beeVersion };
+    }
+  }
 
   // D3 preflight: refusal aborts the ENTIRE apply BEFORE any write - the item
   // loop below and the unconditional onboarding.json rewrite after it are
@@ -2207,7 +2920,7 @@ function applyPlan(
       // only after the fact in a forced apply's own report. Surfaced here so
       // the refused-apply response (the response most users actually see
       // first) carries it.
-      return {
+      const blockedResult = {
         blocked: {
           status: skillSync.blocked.status,
           reason: skillSync.blocked.reason,
@@ -2217,6 +2930,18 @@ function applyPlan(
         skills: { source_root: skillSync.source_root, targets: skillSync.targets },
         beeVersion,
       };
+      // P49: a forceable refusal names its blast radius beyond skills - the
+      // copy_lib/copy_helper paths a --force-downgrade would also overwrite
+      // under .bee/bin. Filtered from the already-computed `plan` verbatim,
+      // order preserved, never recomputed. Non-forceable refusals (unknown
+      // version, blocked_no_source) omit the field entirely - it never
+      // invites a force that can't happen.
+      if (skillSync.blocked.forceable) {
+        blockedResult.host_items = plan.filter(
+          ({ action }) => action === "copy_lib" || action === "copy_helper",
+        );
+      }
+      return blockedResult;
     }
   }
   const skillTargetRootByKind = new Map(
@@ -2378,6 +3103,17 @@ function applyPlan(
         writeFileAtomic(configPath, next);
         break;
       }
+      case "sync_agent_file": {
+        const model = resolveAgentTierModel(repoRoot, AGENT_TIER_BY_NAME[item.agent]);
+        if (model) {
+          writeFileAtomic(target, renderAgentTemplate(item.agent, model));
+        }
+        break;
+      }
+      case "remove_agent_file": {
+        fs.rmSync(target, { force: true });
+        break;
+      }
       case "write_onboarding": {
         // handled after the loop so managed versions reflect the final state
         break;
@@ -2387,6 +3123,7 @@ function applyPlan(
           skillSync.source_root,
           skillTargetRootByKind.get(item.target),
           item.skill,
+          runtimeForTargetKind(item.target),
         );
         if (result.blocked) {
           skippedSkills.push({ skill: item.skill, target: item.target, reason: result.blocked });
@@ -2409,7 +3146,12 @@ function applyPlan(
           });
           continue;
         }
-        const result = applySyncSkill(skillSync.source_root, root, item.skill);
+        const result = applySyncSkill(
+          skillSync.source_root,
+          root,
+          item.skill,
+          runtimeForTargetKind(item.target),
+        );
         if (result.blocked) {
           skippedSkills.push({ skill: item.skill, target: item.target, reason: result.blocked });
           continue; // skipped loudly, not applied
@@ -2437,11 +3179,48 @@ function applyPlan(
     applied.push(item);
   }
 
+  // D9/D7 provenance: stamp each rendered target's skills ROOT with the
+  // bee-render/2 inventory sidecar (schema + target_runtime + per-skill
+  // sha256) so source-identity refuses it as an onboarding source for any
+  // target, AND doctor can deep-audit the installed skill set against it.
+  // Deterministic content (no timestamp) keeps re-applies idempotent.
+  // `noop` targets are the running source itself (source === target) and are
+  // NEVER stamped — that would poison the canonical source into a projection.
+  // Sidecar content is target-independent for a given runtime, so it is
+  // built once per runtime (not once per target) and reused across every
+  // target root that renders for that runtime.
+  if (syncSkills) {
+    const sidecarByRuntime = new Map();
+    for (const t of skillSync.targets) {
+      if (t.blocked || (t.mode !== "sync" && t.mode !== "fresh")) {
+        continue;
+      }
+      const runtime = runtimeForTargetKind(t.kind);
+      if (!sidecarByRuntime.has(runtime)) {
+        sidecarByRuntime.set(
+          runtime,
+          buildRenderSidecar(runtime, sourceSkillDigestEntries(skillSync.source_root, runtime)),
+        );
+      }
+      writeFileAtomic(
+        path.join(t.target_root, RENDER_SIDECAR),
+        `${JSON.stringify(sidecarByRuntime.get(runtime), null, 2)}\n`,
+      );
+    }
+  }
+
   // Always (re)write onboarding.json on apply so managed versions are current.
   const onboardingPath = path.join(repoRoot, ".bee", "onboarding.json");
   const previous = readJsonIfExists(onboardingPath) || {};
   const managed = { ...desiredManaged };
-  if (!repoHooks && previous.managed && previous.managed.repo_hooks) {
+  // Advisor R6 / point 6: a --plugin-source apply lets a prior --repo-hooks
+  // record LAPSE rather than silently carrying it forward — repoHooksTransitionNotices
+  // (above) surfaces this transition to the human in the same run, so it is
+  // documented, not silent. Every OTHER path is unaffected: hasRepoHooksRecorded
+  // already forces repoHooks true again on a normal (non-plugin-source)
+  // re-run, so `!repoHooks` below is otherwise unreachable while a repo_hooks
+  // record exists — this line only ever changed behavior for --plugin-source.
+  if (!repoHooks && !pluginSource && previous.managed && previous.managed.repo_hooks) {
     // preserve the record of a prior --repo-hooks install
     managed.repo_hooks = previous.managed.repo_hooks;
   }
@@ -2449,6 +3228,7 @@ function applyPlan(
     schema_version: ONBOARDING_SCHEMA_VERSION,
     bee_version: beeVersion,
     managed,
+    agents_sync: computeAgentsSyncRecord(repoRoot, beeVersion),
     created_at: previous.created_at || utcNow(),
     updated_at: utcNow(),
   };
@@ -2487,6 +3267,10 @@ function parseArgs(argv) {
     globalSkills: false,
     pluginSource: false,
     forceDowngrade: false,
+    // GH #22 P0-1: which runtime(s) this invocation covers. Default "both"
+    // matches install.sh's own default and keeps a bare invocation's
+    // behavior unchanged (codexHybrid still requires --plugin-source too).
+    runtime: "both",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -2511,14 +3295,23 @@ function parseArgs(argv) {
       args.pluginSource = true;
     } else if (arg === "--force-downgrade") {
       args.forceDowngrade = true;
+    } else if (arg === "--runtime") {
+      args.runtime = argv[i + 1];
+      i += 1;
+    } else if (arg.startsWith("--runtime=")) {
+      args.runtime = arg.slice("--runtime=".length);
     } else if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "Usage: onboard_bee.mjs --repo-root <path> [--apply] [--json] [--repo-hooks] [--plugin-source] [--no-claude-md] [--claude-md] [--global-skills] [--force-downgrade]\n",
+        "Usage: onboard_bee.mjs --repo-root <path> [--apply] [--json] [--repo-hooks] [--plugin-source] " +
+          "[--runtime claude|codex|both] [--no-claude-md] [--claude-md] [--global-skills] [--force-downgrade]\n",
       );
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
+  }
+  if (!["claude", "codex", "both"].includes(args.runtime)) {
+    throw new Error(`--runtime must be claude, codex, or both (got: ${args.runtime})`);
   }
   return args;
 }
@@ -2601,7 +3394,18 @@ export function main(argv = process.argv.slice(2)) {
       globalSkills: args.globalSkills,
       syncSkills: !args.pluginSource,
       forceDowngrade: args.forceDowngrade,
+      // GH #22 P0-1: threaded through so computePlan/applyPlan can gate the
+      // codex-hybrid path (pluginSource && runtimeCoversCodex(runtime)) —
+      // see the --runtime block comment at the top of this file.
+      pluginSource: args.pluginSource,
+      runtime: args.runtime,
     };
+    // Advisor R6 (point 6): surfaced in BOTH plan and apply notices, so a
+    // dry-run already shows the transition before anything is written.
+    const hooksTransitionNotices = repoHooksTransitionNotices(repoRoot, {
+      pluginSource: args.pluginSource,
+      codexHybrid: args.pluginSource && runtimeCoversCodex(args.runtime),
+    });
     if (!args.apply) {
       const { plan, beeVersion, skillSync } = computePlan(repoRoot, options);
       const payload = {
@@ -2632,6 +3436,7 @@ export function main(argv = process.argv.slice(2)) {
           ...commandsNotices(repoRoot, { firstOnboard }),
           ...staleAdvisorNotices(repoRoot),
           ...trackedPathsNotices(repoRoot),
+          ...hooksTransitionNotices,
         ],
       };
       if (skillSync.blocked) {
@@ -2648,21 +3453,26 @@ export function main(argv = process.argv.slice(2)) {
     const result = applyPlan(repoRoot, options);
     if (result.blocked) {
       // Refused apply: zero mutations happened; exit nonzero (D3).
-      emit(
-        {
-          repo_root: repoRoot,
-          status: result.blocked.status,
-          bee_version: result.beeVersion,
-          reason: result.blocked.reason,
-          versions: result.versions,
-          // Review P1-6 / D2: same forced-apply-transparency payload as plan
-          // mode - this refused response is what most users see BEFORE
-          // deciding whether to pass --force-downgrade, so it must carry every
-          // target's computed items too.
-          skills: result.skills,
-        },
-        args.json,
-      );
+      const refusalPayload = {
+        repo_root: repoRoot,
+        status: result.blocked.status,
+        bee_version: result.beeVersion,
+        reason: result.blocked.reason,
+        versions: result.versions,
+        // Review P1-6 / D2: same forced-apply-transparency payload as plan
+        // mode - this refused response is what most users see BEFORE
+        // deciding whether to pass --force-downgrade, so it must carry every
+        // target's computed items too.
+        skills: result.skills,
+      };
+      // P49: thread the host-lib blast radius through to the emitted refusal
+      // payload, top-level sibling beside `skills`. Present (possibly empty)
+      // only when applyPlan() computed it for a forceable refusal; absent
+      // otherwise.
+      if (result.host_items !== undefined) {
+        refusalPayload.host_items = result.host_items;
+      }
+      emit(refusalPayload, args.json);
       return 1;
     }
     const recheck = computePlan(repoRoot, options);
@@ -2707,6 +3517,7 @@ export function main(argv = process.argv.slice(2)) {
         ...commandsNotices(repoRoot, { firstOnboard }),
         ...staleAdvisorNotices(repoRoot),
         ...trackedPathsNotices(repoRoot),
+        ...hooksTransitionNotices,
       ],
     };
     if (result.forcedDowngrade) {

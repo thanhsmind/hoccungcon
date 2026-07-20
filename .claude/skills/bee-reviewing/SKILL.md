@@ -64,7 +64,7 @@ Reviewer dispatch is impossible before step 2 succeeds and the preview in step 3
 
 ## Lane Scaling — the SESSION's scope sets review depth, not the originating feature's lane
 
-No lane auto-runs a reviewer at feature close (goal 1: zero reviewer tokens spent without a request). `tiny`'s self-review/done-report stays entirely inside `bee-swarming`'s solo execution — that is verification, not independent review, and it never substitutes for a session. Once a session is requested, its panel scales to the SCOPE's own risk, independent of any single feature's lane:
+No lane auto-runs a reviewer at feature close (goal 1: zero reviewer tokens spent without a request). `tiny`'s done-report stays entirely inside `bee-swarming`'s single-execution-worker dispatch (the orchestrator authors it from the worker's diff plus its own verify re-run, AO14) — that is verification, not independent review, and it never substitutes for a session. Once a session is requested, its panel scales to the SCOPE's own risk, independent of any single feature's lane:
 
 | Scope risk | Review | Gate 4 |
 |---|---|---|
@@ -103,7 +103,7 @@ Dispatch reviewers with ISOLATED context: the session's cumulative diff + CONTEX
 
 Precedent arrives pre-loaded: planning's bootstrap owns the `docs/history/learnings/` search, and its hits land in `plan.md`, which every reviewer receives — no review-time precedent agent exists. Synthesis (§2) is the orchestrator's own work after all reviewers return, never a dispatched reviewer.
 
-**The `review` slot (P16, decision 0021):** reviewers resolve `resolveTier(root, 'review', runtime)` — a dedicated, per-repo-editable model for review work, default `opus` on Claude (independent reviewer > self-review: the model that reviews should not be the model that implemented). A `null` review slot falls back to `generation`; a `{kind:'cli'}` value dispatches an external adversarial reviewer (e.g. GPT via codex CLI) under the External Executors protocol. Conditional reviewers (below) use the same slot.
+**The `review` slot (P16, decision 0021):** reviewers resolve `resolveTier(root, 'review', runtime)` — a dedicated, per-repo-editable model for review work, default `opus` on Claude (independent reviewer > self-review: the model that reviews should not be the model that implemented). A `null` review slot falls back to `generation`; a `{kind:'cli'}` value dispatches an external adversarial reviewer (e.g. GPT via codex CLI) as a **read-only gather**, resolved with the purpose-scoped 4-arg form `resolveTier(root, 'review', runtime, {for:'gather'})` through the Delegation contract's cli gather branch (`bee-hive/references/routing-and-contracts.md`) — a bare 3-arg resolve of a cli-shaped review slot now refuses (AO12/B1, plan 2A-ii). Conditional reviewers (below) use the same slot.
 
 **Conditional reviewers** join the same parallel wave when the diff mechanically matches their trigger: `performance` (queries in loops, caching), `api-contract` (routes, public shapes), `data-migration` (spawn gate: migration/schema files only), `reliability` (retries, queues, external calls). Scan the diff once before dispatch; spawn every matched trigger; cap the wave at 6 (4 core + 2 conditionals — the cap tracks the roster). Trigger table and focus lines in `references/reviewing-reference.md`.
 

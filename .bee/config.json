@@ -8,5 +8,25 @@
     "session-close": true
   },
   "lanes": {},
-  "capabilities": {}
+  "capabilities": {},
+  "gate_bypass": false,
+  "models": {
+    "claude": {
+      "extraction": "haiku",
+      "generation": "sonnet"
+    },
+    "codex": {
+      "extraction": null,
+      "generation": null
+    }
+  },
+  "advisor": {
+    "enabled": false,
+    "at": [
+      "shape",
+      "execution",
+      "blocked"
+    ],
+    "model": "fable"
+  }
 }

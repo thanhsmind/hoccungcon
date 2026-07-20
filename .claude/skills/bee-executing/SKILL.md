@@ -36,7 +36,7 @@ Open `references/worker-details.md` only for expanded commands, trace tiers, fri
 - Require exactly **one** assigned cell id from the parent. Never choose work yourself — do not browse `ready` or `list` for candidates.
 - No assigned cell id, or the cell is missing/already capped → return `[NOOP]`.
 - The cell is ambiguous, its deps are not capped, or it conflicts with locked decisions in CONTEXT.md → return `[BLOCKED]`. Never reinterpret a locked decision to make the cell fit.
-- Claim it: `node .bee/bin/bee.mjs cells claim --id <id> --worker "<name>"`
+- **Validate, never claim (D1):** the orchestrator already claimed this cell (`cells claim --id` or `claim-next`) before spawning you. Confirm it: `node .bee/bin/bee.mjs cells show --id <id>` must show `status: "claimed"` with `trace.worker` matching your nickname. A worker never runs `cells claim` itself — anything else (open, claimed by a different worker, missing, capped) is not yours to touch → return `[BLOCKED]` (or `[NOOP]` per the rule above), never claim it yourself to make the cell fit.
 
 ## 3. Reserve
 
@@ -73,7 +73,7 @@ Package installs **always** checkpoint: stop and return `[BLOCKED]` with the pac
 
 D1 amends the two-attempts rule above with a worker-level, on-failure-only step. This is **not** a gate-time or orchestrator-level consult — de967733 ("Bee runs ONE cost pattern") stays amended, not reversed: fan-out orchestration remains the default for every phase, and the human gates are untouched.
 
-**Trigger** — consult only when both are true: the dispatch prompt carries an `Advisor` line (the orchestrator already ran the degenerate check per D2/decision 0016 before adding one — the worker never self-assesses this), and the worker has just hit its **first serious failed verify attempt**. No `Advisor` line → proceed exactly as the unchanged rule in Verify.
+**Trigger** — consult only when both are true: the dispatch prompt carries an `Advisor` line (the orchestrator already ran the same-model no-op check per AO4/AO5 before adding one — the worker never self-assesses this), and the worker has just hit its **first serious failed verify attempt**. No `Advisor` line → proceed exactly as the unchanged rule in Verify.
 
 **Canonical loop (D3), max 2 consults per claim:**
 

@@ -29,22 +29,39 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|Bash|Read|Glob|Grep",
+        "matcher": "Edit|Write|MultiEdit|Bash|Read|Glob|Grep|AskUserQuestion",
         "hooks": [
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.bee/bin/hooks/bee-write-guard.mjs"
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.bee/bin/hooks/bee-model-guard.mjs"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "TaskCreate|TaskUpdate|TodoWrite",
+        "matcher": "update_plan|TaskCreate|TaskUpdate|TodoWrite",
         "hooks": [
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.bee/bin/hooks/bee-state-sync.mjs"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.bee/bin/hooks/bee-tools-logger.mjs"
           }
         ]
       }
@@ -70,6 +87,16 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.bee/bin/hooks/bee-state-sync.mjs"
           },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.bee/bin/hooks/bee-session-close.mjs"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.bee/bin/hooks/bee-session-close.mjs"

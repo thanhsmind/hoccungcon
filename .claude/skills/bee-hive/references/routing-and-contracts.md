@@ -107,8 +107,8 @@ Do not read `node_modules/`, `dist/`, `build/`, `.git/` internals, `vendor/`, `c
 |-------|-------|--------|
 | hive | onboarding, state, HANDOFF, critical-patterns, decisions | state routing updates only |
 | exploring | user conversation, critical-patterns, quick scout | `docs/history/<feature>/CONTEXT.md`, state update |
-| planning | CONTEXT.md, critical-patterns, active decisions, bee_status | `approach.md`, `plan.md` (requirements-only → implementation-ready), current-slice cells via `bee.mjs cells add` |
-| briefing | CONTEXT.md, approach.md, plan.md, cells, validating reports, state gates (render/refresh); capped cell traces, review findings, UAT (walkthrough) | `docs/history/<feature>/implement-plan.md` (projection; `small`+); `docs/history/<feature>/walkthrough.md` (post-Gate-4; `standard`/`high-risk`) |
+| planning | CONTEXT.md, critical-patterns, active decisions, bee_status | `approach.md`, `plan.md` (frozen at Gate 2 — approval stamp only after approval; none for `tiny`, opt-in for `small`, D1/D3/D4), current-slice cells via `bee.mjs cells add` |
+| briefing | CONTEXT.md, approach.md, frozen plan.md + cells (drift re-render triggers on cell changes only, since the plan can no longer drift after approval — D9), validating reports, state gates (render/refresh); capped cell traces, review findings, UAT (walkthrough) | `docs/history/<feature>/implement-plan.md` (projection; `high-risk` always, `standard` on-demand, `small` optional on request per D4); `docs/history/<feature>/walkthrough.md` (post-Gate-4; `standard`/`high-risk`) |
 | validating | CONTEXT.md, discovery, approach, approved shape, cells | reality-gate report, feasibility matrix, spike results in `.bee/spikes/`, repaired cells |
 | swarming | validated cells, state, reservations | worker registry in state, HANDOFF at ~65%, wave results |
 | executing | assigned cell, CONTEXT.md, reservations | implementation commits (one per cell, cell id in message), verify record, cap, report in `docs/history/<feature>/reports/` |
@@ -175,6 +175,17 @@ Litmus test: **the user must be able to restate what they are approving in their
 
 This contract applies to all four gates, in every mode, including go mode.
 
+### AskUserQuestion — honor the tool's schema (a valid call, every time)
+
+Gates, decisions, and confirm-before-doing prompts are presented with the `AskUserQuestion` tool. If the call violates the tool's schema the harness rejects the **whole** call with **"Invalid tool parameters"** — a recurring, silent waste (the model then retries a valid one). Build the call inside these limits:
+
+- **`header` ≤ 12 characters** — it is a short chip label, NOT the question. Vietnamese/English descriptive headers ("Xử lý external", "Cách hiển thị") overflow instantly — use "Approach", "Scope", "External". **This is the #1 cause of the error.**
+- **2–4 options per question** — never 1, never 5+. An "Other" free-text choice is added automatically, so fold overflow there or into a follow-up question.
+- **1–4 questions per call** — batch independent questions (up to 4), serialize dependent ones.
+- Every option needs both a **`label`** and a **`description`**; put the recommended option first with "(Recommended)" in its label.
+
+A question that "needs" a long header or >4 options is a signal to reshape it — split it, or push detail into the option descriptions — never to exceed the schema.
+
 ### Gate bypass mode (opt-in autopilot, decisions 0010 / dcf01d7b)
 
 Off by default. Turned on with the `bee-bypass-gate` skill, which sets `.bee/config.json` `gate_bypass` (persistent per-repo). When on at any level, the agent does **not** stop at a bypassed gate — it takes the RECOMMENDATION option itself and continues. This is the one deliberate exception to "gates are never self-approved"; **headless mode is not** — headless still stops at every gate.
@@ -199,6 +210,8 @@ Legacy `true` maps to `normal`, so existing repos are unchanged. At **Gate 1, 2,
 
 The mechanical guards do not change: `claimCell` and the write-guard still require `approved_gates.execution: true` — bypass simply means the agent records that approval itself for eligible work instead of waiting for the human. Bypass state is surfaced every session (the preamble and `bee_status` both print a loud level-specific `GATE BYPASS` banner — `NORMAL` / `FULL AUTOPILOT` / `TOTAL AUTOPILOT — ZERO STOPS`) so the active level is never silently in effect.
 
+**The bypass is now mechanized at runtime, not prose-only (GitHub #18, hook-runtime B15/R14).** The rule above is still the assistant's to follow, but it is no longer the *only* thing honoring it: the session-stop checkpoint (`hooks/bee-session-close.mjs` `maybeBypassBlock`) emits a turn-control block that forces continuation when the assistant tries to stop mid-planning/validating at a gate the active level covers and is still pending. It is loop-guarded (blocks once per `sessionId:phase:gate:level`, then degrades to advisory) and excludes exploring/Gate 1 (genuine information questions still stop even under `total`). This closes the "invariant left in prose WILL be bypassed" gap (crit-pattern 20260714): the doctrine test mechanized the prose, this mechanizes the runtime.
+
 ### Delegation contract (fan-out: decide-altitude vs gather-altitude)
 
 The one orchestration pattern bee runs: the session model (the owner's best model) stays the orchestrator in every phase, and mechanical gather/render/mine steps dispatch down-tier as I/O workers that return digests (D1 — replaces the advisor pattern in full, decisions 0013/0015 reversed).
@@ -208,23 +221,21 @@ The one orchestration pattern bee runs: the session model (the owner's best mode
 - **D3 lane rule** — the rubric applies in every lane and every phase, tiny/small included. Lane scaling v2's (d02a6bc6) "0 subagents" for tiny/small means zero *ceremony* subagents (reviewers/checkers/panels); I/O workers are exempt. A 1-file tiny fix never crosses the rubric, so it stays inline naturally.
 - **Digest contract** — an I/O worker returns paths read, the facts extracted (with file:line anchors), and verbatim quotes only where asked; the orchestrator never re-reads what a digest already answers.
 - **Transport unchanged** — anchored `[bee-tier: <tier>]` marker or `model` param (decision 0023), model name in the Agent description, background dispatch where the runtime supports it (decision 0017), P22 dispatch log as the audit trail. I/O workers do **not** register in `bee.mjs state worker add` — the registry stays swarm-cell-scoped (reservations/status are execution concerns); the dispatch log is the audit surface for gathers.
+- **Execution worker (AO14, second named class)** — the Delegation contract's other dispatch shape, distinguished from the I/O-offload worker by **authority and state effects**, not by task size. Unlike an I/O worker, an execution worker **does** register in the swarm registry (`bee.mjs state worker add`) and **does** take reservations under its own nickname; it implements exactly one assigned cell (claim → read `read_first` → implement within `files` → verify → cap → release) and returns exactly one status token (`[DONE]`/`[BLOCKED]`/`[HANDOFF]`/`[NOOP]`) — it is authority-bearing, never a digest-only gather. Every `bee-swarming` worker dispatch belongs to this class: full waves in `standard`/`high-risk`, and, since AO14, the single dispatched worker that now carries out `tiny`/`small` cell implementation too (`bee-swarming/SKILL.md`'s Single execution worker section) — never zero of them, even for the lightest lane. An independent reviewer or checker (plan-checker, cell reviewer, panel member) is **neither** class: it is a review-class dispatch — read-only, no registry entry, no reservations, no cell of its own — and is never called an "execution worker."
+- **cli gather branch (plan 2A-ii, decision 34398e69)** — when `resolveTier(root, 'generation', runtime, {for:'gather'}).type === 'cli'`, a gather dispatch runs the configured command **verbatim** via the shell — nothing appended, ever (W7); the prompt goes in on **stdin**; every path handed to the worker is **absolute** (W9); the run is **read-only** by contract. **Stdout IS the digest**, framed by a delimiter contract: the worker prompt instructs the CLI to emit its digest between `<<<BEE_DIGEST` and `BEE_DIGEST>>>` lines, and the orchestrator extracts only what sits between them — missing delimiters or an empty digest is a **failed run**, surfaced loudly, never accepted as a silent green (fail-open-masking pattern, critical-patterns 20260716-class). No `result.json`, no cell, no reservation, no `bee.mjs state worker add` registration for a gather, same as any other I/O worker. **Known measurement gap, named not solved here:** a Bash-launched gather emits zero `dispatch.jsonl` rows (W-d) — closing that gap is Slice 3's job, not this branch's.
 
-### Native Codex subagent tending
+### Goal-check judge tier (D4/D5, self-correcting-loop) — verification, not review
 
-For every bee-owned native Codex subagent flow, including ordinary delegated
-gathers, a completed `wait_agent` call with no completion is an **empty wait**:
-it is a timeout signal only, never failure. Never follow an empty wait directly
-with another `wait_agent`; authority, urgency, and no-chatter instructions create
-no exception. Before any later bounded wait, continue material task-local work
-when any remains; otherwise take exactly one `list_agents` snapshot. Then send
-one concise commentary update naming both the live agent state and the next
-action; only then may a later bounded wait run. No-op work, repeated state reads,
-hidden reasoning, generic commentary, or commentary alone do not qualify.
-Timeout never licenses interrupt, duplicate dispatch, claim release, or
-reservation release; every running agent, claim, and reservation stays owned.
-This refines, rather than replaces, the ban on file/scratchpad polling for
-harness-managed subagents. External process and artifact polling keeps its own
-contract and is outside this native-agent rule.
+The swarming goal-check (P12, decision 0018) gains a **semantic** judge tier by lane, layered on the existing frozen judge (`bee cells judge`, undeclared-file check) — this is verification of a capped cell, never the user-invoked review session (decision 565e68d0 stands; Gate 4 and the candidates ledger are untouched by every row below).
+
+| Lane | Judge | Model | Verdict handling |
+|---|---|---|---|
+| `tiny` / `small` | mechanical only (frozen judge) — unchanged | — | — |
+| `standard` | ONE checklist judge — a pinned `bee-review` dispatch, review tier, read-only — per capped `behavior_change` cell; checks `must_haves` truths vs the diff, CONTEXT decision citations, task-to-diff alignment | review-tier config | `PASS` → counts; `NEEDS_REVISION` + `automatic` → cell NOT done, re-dispatch with the exact failing checks + a ledger entry; `NEEDS_REVISION` + `authority` → escalate to the user |
+| `high-risk` | same checklist judge as `standard` | independence preferred — model differs from the builder's resolved model; if equal, record `model_independence: "same-model"` honestly and the judge still runs | same verdict handling as `standard` |
+
+The judge returns the D5 schema (`judge-verdict/1`), recorded via `bee cells judge-record`; free-prose output is a failed judge run, re-dispatched once, then recorded `unverified`. This table is the single home for the judge-tier rule (D4+Δ6) — every other 565e68d0-adjacent surface (bee-swarming SKILL + reference, bee-hive SKILL both sites, go-mode, AGENTS.md + its template, bee-scribing SKILL) carries only a one-line pointer back here, never a repeated table.
+
 
 ## Question Format
 
@@ -251,7 +262,9 @@ One question per message. Never bundle. Never answer your own question.
   bin/  bin/lib/
 
 docs/history/<feature>/
-  CONTEXT.md  plan.md  reports/                       ← always
+  CONTEXT.md  reports/                                ← always
+  plan.md                                              ← frozen at Gate 2 (D1): standard/high-risk
+                                                        always; small opt-in (D4); tiny/spike none (D3)
   discovery.md  approach.md  implement-plan.md        ← conditional (decision 0009): separate
                                                         files only for L2+ discovery / high-risk;
                                                         else folded into plan.md sections
